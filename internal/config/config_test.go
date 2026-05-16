@@ -173,3 +173,21 @@ func TestHealRejectsZeroMaxAttempts(t *testing.T) {
 		t.Fatal("expected error: HEAL_MAX_ATTEMPTS=0 means nothing ever heals")
 	}
 }
+
+func TestHealWebhookDefaults(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SAB2TORBOX_TORBOX_API_TOKEN", "t")
+	t.Setenv("SAB2TORBOX_SAB_API_KEY", "k")
+	t.Setenv("SAB2TORBOX_WEBDAV_MOUNT_ROOT", dir)
+	t.Setenv("SAB2TORBOX_SYMLINK_ROOT", dir)
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.HealWebhookURL != "" {
+		t.Errorf("HealWebhookURL default should be empty, got %q", c.HealWebhookURL)
+	}
+	if len(c.HealWebhookEvents) != 1 || c.HealWebhookEvents[0] != "failed" {
+		t.Errorf("HealWebhookEvents default should be [failed], got %v", c.HealWebhookEvents)
+	}
+}

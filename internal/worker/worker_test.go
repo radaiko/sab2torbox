@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -834,5 +835,72 @@ func TestHealerDryRunDoesNotResubmit(t *testing.T) {
 	}
 	if got, _ := st.GetJob(ctx, id); got.State != job.StateImported {
 		t.Errorf("dry-run must leave the job state unchanged, got %s", got.State)
+	}
+}
+
+func TestHealWebhookWants(t *testing.T) {
+	events := []string{"failed", "healed"}
+	if !healWebhookWants(events, "failed") {
+		t.Error("failed should be wanted")
+	}
+	if healWebhookWants(events, "detected") {
+		t.Error("detected should not be wanted")
+	}
+}
+
+func TestEmitHealEventPostsPayload(t *testing.T) {
+	received := make(chan webhookPayload, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("content-type: %q", r.Header.Get("Content-Type"))
+		}
+		var p webhookPayload
+		json.NewDecoder(r.Body).Decode(&p)
+		received <- p
+	}))
+	defer srv.Close()
+
+	w, _, cfg := testWorkers(t, &fakeTorBox{})
+	cfg.HealWebhookURL = srv.URL
+	cfg.HealWebhookEvents = []string{"healed"}
+
+	j := &job.Job{ID: 7, NZBName: "Rel", Category: "sonarr", HealCount: 1}
+	w.emitHealEvent("healed", j, healEventExtra{SymlinksHealed: 2, NewTorBoxID: 99})
+
+	select {
+	case p := <-received:
+		if p.Event != "healed" || p.Job.ID != 7 || p.SymlinksHealed != 2 || p.NewTorBoxID != 99 {
+			t.Errorf("bad payload: %+v", p)
+		}
+		if p.Timestamp == "" {
+			t.Error("timestamp must be set")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("webhook was not delivered")
+	}
+}
+
+func TestEmitHealEventSkipsUnwantedAndUnconfigured(t *testing.T) {
+	hits := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits <- struct{}{}
+	}))
+	defer srv.Close()
+
+	w, _, cfg := testWorkers(t, &fakeTorBox{})
+	j := &job.Job{ID: 1, NZBName: "n"}
+
+	// Unconfigured URL: no POST.
+	w.emitHealEvent("failed", j, healEventExtra{})
+	// Configured, but the event is not in the wanted set: no POST.
+	cfg.HealWebhookURL = srv.URL
+	cfg.HealWebhookEvents = []string{"healed"}
+	w.emitHealEvent("failed", j, healEventExtra{})
+
+	select {
+	case <-hits:
+		t.Fatal("webhook fired when it should not have")
+	case <-time.After(300 * time.Millisecond):
+		// expected — nothing delivered
 	}
 }
