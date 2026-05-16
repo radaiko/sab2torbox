@@ -606,3 +606,43 @@ func TestHealRunInfoZeroBeforeFirstRun(t *testing.T) {
 		t.Errorf("expected zero times before the first heal run, got %v / %v", last, next)
 	}
 }
+
+func TestHealerDiscoversLibrarySymlinks(t *testing.T) {
+	w, st, cfg := testWorkers(t, &fakeTorBox{})
+	libRoot := t.TempDir()
+	cfg.HealLibraryRoots = []string{libRoot}
+	ctx := context.Background()
+
+	// A completed job whose release folder is "Rel.A".
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateImported, Category: "sonarr", NZBName: "Rel.A"})
+	j, _ := st.GetJob(ctx, id)
+	j.StoragePath = filepath.Join(cfg.SymlinkRoot, "sonarr", "Rel.A")
+	st.UpdateJob(ctx, j)
+
+	// A library symlink pointing into the WebDAV mount for that release.
+	target := filepath.Join(cfg.WebDAVMountRoot, "Rel.A", "ep.mkv")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(target, []byte("v"), 0o644)
+	link := filepath.Join(libRoot, "Show", "ep.mkv")
+	os.MkdirAll(filepath.Dir(link), 0o755)
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink pointing somewhere else entirely — must be ignored.
+	other := filepath.Join(t.TempDir(), "elsewhere.mkv")
+	os.WriteFile(other, []byte("x"), 0o644)
+	os.Symlink(other, filepath.Join(libRoot, "Show", "other.mkv"))
+
+	if err := w.discoverSymlinks(ctx); err != nil {
+		t.Fatalf("discoverSymlinks: %v", err)
+	}
+	syms, _ := st.ListImportedSymlinks(ctx)
+	if len(syms) != 1 {
+		t.Fatalf("expected 1 tracked symlink, got %d", len(syms))
+	}
+	if syms[0].SymlinkPath != link || syms[0].JobID != id {
+		t.Errorf("bad tracked symlink: %+v", syms[0])
+	}
+}
