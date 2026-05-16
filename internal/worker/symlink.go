@@ -105,3 +105,83 @@ func classifyReleaseDir(dir string) (empty, allBroken bool, err error) {
 	}
 	return files == 0, files > 0 && broken == files, nil
 }
+
+// atomicReplaceSymlink repoints linkPath at newTarget without ever leaving
+// linkPath absent: it creates a temp symlink and renames it over linkPath.
+// rename(2) is atomic on POSIX, so a process with the file open keeps reading.
+func atomicReplaceSymlink(linkPath, newTarget string) error {
+	tmp := linkPath + ".heal-tmp"
+	_ = os.Remove(tmp) // clear any stale temp link from a crashed run
+	if err := os.Symlink(newTarget, tmp); err != nil {
+		return fmt.Errorf("creating temp symlink: %w", err)
+	}
+	if err := os.Rename(tmp, linkPath); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("atomically replacing symlink: %w", err)
+	}
+	return nil
+}
+
+// lcp returns the length of the longest common prefix of a and b.
+func lcp(a, b string) int {
+	n := 0
+	for n < len(a) && n < len(b) && a[n] == b[n] {
+		n++
+	}
+	return n
+}
+
+// videoExts is the set of extensions treated as the playable video file.
+var videoExts = map[string]bool{
+	".mkv": true, ".mp4": true, ".avi": true, ".m4v": true,
+	".ts": true, ".wmv": true, ".mov": true,
+}
+
+// isVideoFile reports whether name has a known video extension.
+func isVideoFile(name string) bool {
+	return videoExts[strings.ToLower(filepath.Ext(name))]
+}
+
+// findBestMatch locates the file in dir that most likely corresponds to
+// oldBasename, for the case where a re-submitted release names its files
+// slightly differently. It never guesses wildly: if nothing plausibly
+// matches it returns an error so the caller leaves the old symlink alone.
+func findBestMatch(dir, oldBasename string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", fmt.Errorf("reading %q: %w", dir, err)
+	}
+	// 1. Exact match, case-insensitive.
+	for _, e := range entries {
+		if strings.EqualFold(e.Name(), oldBasename) {
+			return filepath.Join(dir, e.Name()), nil
+		}
+	}
+	// 2. Same extension, longest common prefix (case-insensitive).
+	oldExt := strings.ToLower(filepath.Ext(oldBasename))
+	lowerOld := strings.ToLower(oldBasename)
+	var best string
+	bestScore := 0
+	for _, e := range entries {
+		if strings.ToLower(filepath.Ext(e.Name())) != oldExt {
+			continue
+		}
+		if score := lcp(strings.ToLower(e.Name()), lowerOld); score > bestScore {
+			best, bestScore = filepath.Join(dir, e.Name()), score
+		}
+	}
+	if best != "" && bestScore > len(oldBasename)/2 {
+		return best, nil
+	}
+	// 3. Exactly one video file in the directory — assume it is the one.
+	var videos []string
+	for _, e := range entries {
+		if !e.IsDir() && isVideoFile(e.Name()) {
+			videos = append(videos, e.Name())
+		}
+	}
+	if len(videos) == 1 {
+		return filepath.Join(dir, videos[0]), nil
+	}
+	return "", fmt.Errorf("no match for %q in %q", oldBasename, dir)
+}
