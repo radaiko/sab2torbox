@@ -21,12 +21,13 @@ import (
 
 // fakeTorBox is an in-memory TorBoxAPI for tests.
 type fakeTorBox struct {
-	mu        sync.Mutex
-	created   []torbox.CreateRequest
-	createErr error
-	nextID    int64
-	list      []torbox.UsenetDownload
-	controls  []string
+	mu         sync.Mutex
+	created    []torbox.CreateRequest
+	createErr  error
+	nextID     int64
+	list       []torbox.UsenetDownload
+	controls   []string
+	controlErr error
 }
 
 func (f *fakeTorBox) CreateUsenetDownload(_ context.Context, r torbox.CreateRequest) (*torbox.CreateResult, error) {
@@ -50,7 +51,7 @@ func (f *fakeTorBox) ControlUsenet(_ context.Context, id int64, op string) error
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.controls = append(f.controls, op)
-	return nil
+	return f.controlErr
 }
 
 func (f *fakeTorBox) Ping(context.Context) error { return nil }
@@ -306,6 +307,55 @@ func TestRunStartsAndStopsOnContextCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not stop after context cancel")
+	}
+}
+
+func TestDeleterRemovesFromTorBoxAndDropsRow(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, _ := testWorkers(t, fake)
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateDeleted, Category: "sonarr", NZBName: "Del"})
+	j, _ := st.GetJob(ctx, id)
+	j.TorBoxID = 555
+	st.UpdateJob(ctx, j)
+
+	if err := w.deleteOnce(ctx); err != nil {
+		t.Fatalf("deleteOnce: %v", err)
+	}
+	if len(fake.controls) != 1 || fake.controls[0] != "delete" {
+		t.Errorf("expected one torbox delete, got %v", fake.controls)
+	}
+	if _, err := st.GetJob(ctx, id); err == nil {
+		t.Error("job row should be removed after a successful delete")
+	}
+}
+
+func TestDeleterRetriesThenGivesUp(t *testing.T) {
+	fake := &fakeTorBox{controlErr: &torbox.APIError{Status: 500, Detail: "try again later"}}
+	w, st, _ := testWorkers(t, fake)
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateDeleted, Category: "sonarr", NZBName: "Del"})
+	j, _ := st.GetJob(ctx, id)
+	j.TorBoxID = 556
+	st.UpdateJob(ctx, j)
+
+	// TorBox keeps failing: the row is kept for the next cycle.
+	if err := w.deleteOnce(ctx); err != nil {
+		t.Fatalf("deleteOnce: %v", err)
+	}
+	if _, err := st.GetJob(ctx, id); err != nil {
+		t.Fatal("job should be kept for retry while the TorBox delete fails")
+	}
+
+	// Past the give-up window, the row is dropped despite the failure.
+	old := deleteGiveUpAfter
+	deleteGiveUpAfter = -time.Second
+	defer func() { deleteGiveUpAfter = old }()
+	if err := w.deleteOnce(ctx); err != nil {
+		t.Fatalf("deleteOnce (give up): %v", err)
+	}
+	if _, err := st.GetJob(ctx, id); err == nil {
+		t.Error("job row should be dropped once the give-up window has elapsed")
 	}
 }
 

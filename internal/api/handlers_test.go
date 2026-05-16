@@ -37,7 +37,7 @@ func testServer(t *testing.T) (*Server, *store.Store) {
 		WebDAVUsenetSubpath: "usenet", Categories: []string{"sonarr", "radarr"},
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewServer(st, cfg, logger, nil), st
+	return NewServer(st, cfg, logger), st
 }
 
 func TestAuthRejectsBadKey(t *testing.T) {
@@ -144,7 +144,7 @@ func TestQueueAndHistory(t *testing.T) {
 	}
 }
 
-func TestHistoryDeleteWithFilesCallsTorBox(t *testing.T) {
+func TestHistoryDeleteWithFilesMarksJobDeleted(t *testing.T) {
 	srv, st := testServer(t)
 	ctx := context.Background()
 	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateCompleted, Category: "sonarr", NZBName: "Del"})
@@ -152,19 +152,18 @@ func TestHistoryDeleteWithFilesCallsTorBox(t *testing.T) {
 	j.TorBoxID = 500
 	st.UpdateJob(ctx, j)
 
-	fake := &fakeDeleter{}
-	srv.deleter = fake
-
 	rec := httptest.NewRecorder()
 	u := "/api?mode=history&name=delete&value=" + url.QueryEscape(j.NzoID()) +
 		"&del_files=1&apikey=secret"
 	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, u, nil))
 
-	if len(fake.deleted) != 1 || fake.deleted[0] != 500 {
-		t.Errorf("expected torbox delete of id 500, got %v", fake.deleted)
+	// del_files keeps the row for the deleter worker, in state "deleted".
+	got, err := st.GetJob(ctx, id)
+	if err != nil {
+		t.Fatalf("job row should be kept for the deleter worker: %v", err)
 	}
-	if _, err := st.GetJob(ctx, id); err == nil {
-		t.Error("job row should be removed after delete")
+	if got.State != job.StateDeleted {
+		t.Errorf("state: got %s want deleted", got.State)
 	}
 }
 
@@ -279,16 +278,6 @@ func TestQueueDeleteWithoutFiles(t *testing.T) {
 	if _, err := st.GetJob(ctx, id); err == nil {
 		t.Error("job should be removed by queue delete")
 	}
-}
-
-// fakeDeleter records TorBox delete calls.
-type fakeDeleter struct{ deleted []int64 }
-
-func (f *fakeDeleter) ControlUsenet(_ context.Context, id int64, op string) error {
-	if op == "delete" {
-		f.deleted = append(f.deleted, id)
-	}
-	return nil
 }
 
 // fakeHealth is a canned Checker.

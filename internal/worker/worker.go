@@ -61,6 +61,7 @@ func (w *Workers) Run(ctx context.Context) {
 	}{
 		{"submitter", w.cfg.PollInterval, w.submitOnce},
 		{"poller", w.cfg.PollInterval, w.pollOnce},
+		{"deleter", w.cfg.PollInterval, w.deleteOnce},
 		{"reaper", 5 * time.Minute, w.reapOnce},
 	}
 	for _, l := range loops {

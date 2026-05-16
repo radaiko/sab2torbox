@@ -51,7 +51,7 @@ func run() error {
 
 	tb := torbox.New(cfg.TorBoxAPIToken)
 	workers := worker.New(st, tb, cfg, logger)
-	srv := api.NewServer(st, cfg, logger, tb)
+	srv := api.NewServer(st, cfg, logger)
 	srv.SetHealth(api.NewHealth(st, tb, 5*time.Minute))
 
 	httpServer := &http.Server{

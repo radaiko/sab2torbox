@@ -20,11 +20,6 @@ import (
 // maxNZBSize caps an uploaded NZB at 32 MiB.
 const maxNZBSize = 32 << 20
 
-// Deleter deletes a download on TorBox. The TorBox client satisfies it.
-type Deleter interface {
-	ControlUsenet(ctx context.Context, id int64, op string) error
-}
-
 // Checker reports service health. api.Health satisfies it.
 type Checker interface {
 	Check(ctx context.Context) error
@@ -32,17 +27,15 @@ type Checker interface {
 
 // Server holds dependencies for the SABnzbd-compatible HTTP API.
 type Server struct {
-	store   *store.Store
-	cfg     *config.Config
-	logger  *slog.Logger
-	deleter Deleter
-	health  Checker
+	store  *store.Store
+	cfg    *config.Config
+	logger *slog.Logger
+	health Checker
 }
 
-// NewServer constructs a Server. deleter may be nil if TorBox deletion is not
-// wired (delete then only drops the local row).
-func NewServer(st *store.Store, cfg *config.Config, logger *slog.Logger, deleter Deleter) *Server {
-	return &Server{store: st, cfg: cfg, logger: logger, deleter: deleter}
+// NewServer constructs a Server.
+func NewServer(st *store.Store, cfg *config.Config, logger *slog.Logger) *Server {
+	return &Server{store: st, cfg: cfg, logger: logger}
 }
 
 // SetHealth attaches a health checker for the /healthz endpoint.
@@ -239,7 +232,9 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDelete removes jobs named by the comma-separated nzo_id list in
-// value=. With del_files=1 it also deletes the download from TorBox.
+// value=. With del_files=1 the job is marked for deletion and the deleter
+// worker removes the download from TorBox (with retries); without it, the
+// local row is simply dropped and the TorBox download is left in place.
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	delFiles := param(r, "del_files") == "1"
@@ -252,11 +247,17 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		if delFiles && j.TorBoxID != 0 && s.deleter != nil {
-			if err := s.deleter.ControlUsenet(ctx, j.TorBoxID, "delete"); err != nil {
-				s.logger.Error("torbox delete failed",
-					"job_id", j.ID, "torbox_id", j.TorBoxID, "error", err)
+		if delFiles && j.TorBoxID != 0 {
+			// Hand off to the deleter worker: it removes the download from
+			// TorBox (retrying transient failures) and then drops the row.
+			j.State = job.StateDeleted
+			if err := s.store.UpdateJob(ctx, j); err != nil {
+				s.logger.Error("marking job for deletion", "job_id", id, "error", err)
+			} else {
+				s.logger.Info("job queued for torbox deletion",
+					"job_id", id, "torbox_id", j.TorBoxID)
 			}
+			continue
 		}
 		if err := s.store.DeleteJob(ctx, id); err != nil {
 			s.logger.Error("deleting job row", "job_id", id, "error", err)
