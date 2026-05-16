@@ -15,8 +15,8 @@ import (
 var activeStates = []job.State{job.StateQueued, job.StateDownloading}
 
 // missingPollThreshold is how many consecutive polls a job may be absent from
-// the TorBox list before the poller declares it failed. At the default 10s
-// poll interval this is one minute of continuous absence, which debounces a
+// the TorBox list before the poller declares it failed. At the default 1m
+// poll interval this is six minutes of continuous absence, which debounces a
 // transient mylist hiccup while still catching a download TorBox has dropped.
 var missingPollThreshold = 6
 

@@ -100,7 +100,7 @@ func (w *Workers) finishHeal(ctx context.Context, j *job.Job, rec torbox.UsenetD
 	// by release name and the deleter's guarded cleanup stays correct.
 	j.StoragePath = filepath.Join(w.cfg.SymlinkRoot, j.Category, rec.Name)
 	j.ProgressPct = 100
-	j.HealCount++
+	j.HealCount = 0 // a successful heal clears the consecutive-failure count
 	j.LastHealedAt = &now
 	j.LastHealError = ""
 	if err := w.store.UpdateJob(ctx, j); err != nil {
@@ -187,10 +187,26 @@ func (w *Workers) detectBrokenSymlinks(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	jobs, err := w.store.JobsByState(ctx, job.StateImported, job.StateHealing, job.StateHealFailed)
+	if err != nil {
+		return err
+	}
+	eligible := make(map[int64]bool, len(jobs))
+	for _, j := range jobs {
+		eligible[j.ID] = true
+	}
 	now := timeNow()
 	for _, sym := range syms {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if !eligible[sym.JobID] {
+			// The owning job is no longer heal-relevant — stop tracking it so
+			// its stale rows don't inflate the broken-symlink count.
+			if derr := w.store.DeleteImportedSymlink(ctx, sym.ID); derr != nil {
+				w.logger.Warn("heal: removing symlink for stale job", "id", sym.ID, "error", derr)
+			}
+			continue
 		}
 		if _, err := os.Lstat(sym.SymlinkPath); err != nil {
 			if derr := w.store.DeleteImportedSymlink(ctx, sym.ID); derr != nil {

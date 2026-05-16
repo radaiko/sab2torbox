@@ -102,7 +102,7 @@ func TestEndToEndRotationHeal(t *testing.T) {
 		t.Fatalf("healReconcileOnce: %v", err)
 	}
 	got, _ := st.GetJob(ctx, id)
-	if got.State != job.StateImported || got.HealCount != 1 {
+	if got.State != job.StateImported || got.HealCount != 0 {
 		t.Fatalf("after heal: state=%s heal_count=%d", got.State, got.HealCount)
 	}
 	target, _ := os.Readlink(link)

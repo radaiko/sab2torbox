@@ -379,7 +379,7 @@ func TestHealRetryEndpoint(t *testing.T) {
 	st.UpdateJob(ctx, j)
 
 	rec := httptest.NewRecorder()
-	u := "/health/heal/" + itoaTest(id) + "/retry"
+	u := "/health/heal/" + itoaTest(id) + "/retry?apikey=secret"
 	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, u, nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: %d body=%s", rec.Code, rec.Body.String())
@@ -399,7 +399,7 @@ func TestHealGiveUpEndpoint(t *testing.T) {
 	})
 
 	rec := httptest.NewRecorder()
-	u := "/health/heal/" + itoaTest(id) + "/give_up"
+	u := "/health/heal/" + itoaTest(id) + "/give_up?apikey=secret"
 	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, u, nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: %d", rec.Code)
@@ -420,7 +420,7 @@ func TestHealRetryRejectsNonHealFailedJob(t *testing.T) {
 	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateImported, Category: "c", NZBName: "n"})
 	rec := httptest.NewRecorder()
 	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPost,
-		"/health/heal/"+itoaTest(id)+"/retry", nil))
+		"/health/heal/"+itoaTest(id)+"/retry?apikey=secret", nil))
 	var resp ErrorResponse
 	json.Unmarshal(rec.Body.Bytes(), &resp)
 	if resp.Status {
@@ -437,7 +437,7 @@ func TestHealGiveUpRejectsNonHealFailedJob(t *testing.T) {
 	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateHealing, Category: "c", NZBName: "n"})
 	rec := httptest.NewRecorder()
 	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPost,
-		"/health/heal/"+itoaTest(id)+"/give_up", nil))
+		"/health/heal/"+itoaTest(id)+"/give_up?apikey=secret", nil))
 	var resp ErrorResponse
 	json.Unmarshal(rec.Body.Bytes(), &resp)
 	if resp.Status {
@@ -445,6 +445,25 @@ func TestHealGiveUpRejectsNonHealFailedJob(t *testing.T) {
 	}
 	if got, _ := st.GetJob(ctx, id); got.State != job.StateHealing {
 		t.Errorf("the job state must be unchanged, got %s", got.State)
+	}
+}
+
+func TestHealEndpointsRequireAPIKey(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateHealFailed, Category: "c", NZBName: "n"})
+
+	// No apikey: the state-mutating POST must be rejected and the job untouched.
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPost,
+		"/health/heal/"+itoaTest(id)+"/retry", nil))
+	var resp ErrorResponse
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Status {
+		t.Error("retry without the API key must be rejected")
+	}
+	if got, _ := st.GetJob(ctx, id); got.HealCount != 0 || got.State != job.StateHealFailed {
+		t.Errorf("an unauthenticated retry must not mutate the job: %+v", got)
 	}
 }
 

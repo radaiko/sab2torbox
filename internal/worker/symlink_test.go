@@ -180,13 +180,14 @@ func TestFindBestMatch(t *testing.T) {
 		t.Errorf("match: got %q", got)
 	}
 
-	// Single video file fallback.
+	// A differently-named lone file is NOT a confident match — findBestMatch
+	// must error rather than guess and risk relinking to different content.
 	solo := t.TempDir()
 	if err := os.WriteFile(filepath.Join(solo, "totally.different.name.mkv"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := findBestMatch(solo, "original.mkv"); err != nil {
-		t.Errorf("single-video fallback should match: %v", err)
+	if _, err := findBestMatch(solo, "original.mkv"); err == nil {
+		t.Error("a name with no plausible match must not be guessed at")
 	}
 
 	// No plausible match -> error.

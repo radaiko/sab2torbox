@@ -131,17 +131,6 @@ func lcp(a, b string) int {
 	return n
 }
 
-// videoExts is the set of extensions treated as the playable video file.
-var videoExts = map[string]bool{
-	".mkv": true, ".mp4": true, ".avi": true, ".m4v": true,
-	".ts": true, ".wmv": true, ".mov": true,
-}
-
-// isVideoFile reports whether name has a known video extension.
-func isVideoFile(name string) bool {
-	return videoExts[strings.ToLower(filepath.Ext(name))]
-}
-
 // findBestMatch locates the file in dir that most likely corresponds to
 // oldBasename, for the case where a re-submitted release names its files
 // slightly differently. It never guesses wildly: if nothing plausibly
@@ -173,15 +162,8 @@ func findBestMatch(dir, oldBasename string) (string, error) {
 	if best != "" && bestScore > len(oldBasename)/2 {
 		return best, nil
 	}
-	// 3. Exactly one video file in the directory — assume it is the one.
-	var videos []string
-	for _, e := range entries {
-		if !e.IsDir() && isVideoFile(e.Name()) {
-			videos = append(videos, e.Name())
-		}
-	}
-	if len(videos) == 1 {
-		return filepath.Join(dir, videos[0]), nil
-	}
-	return "", fmt.Errorf("no match for %q in %q", oldBasename, dir)
+	// No confident match — return an error so finishHeal leaves the old
+	// (broken) symlink in place. Guessing by "lone video file" could repoint
+	// a library entry at different content (a PROPER, a different edition).
+	return "", fmt.Errorf("no confident match for %q in %q", oldBasename, dir)
 }

@@ -34,6 +34,10 @@ type Workers struct {
 	// poller goroutine, so it needs no lock.
 	missingPolls map[int64]int
 
+	// deleteAttempts counts, per job ID, failed TorBox-delete attempts.
+	// Touched only by the single deleter goroutine, so it needs no lock.
+	deleteAttempts map[int64]int
+
 	// WebDAV /refresh state, also poller-goroutine-only.
 	httpClient         *http.Client
 	lastWebDAVRefresh  time.Time
@@ -47,12 +51,13 @@ type Workers struct {
 // New constructs a Workers.
 func New(st *store.Store, tb TorBoxAPI, cfg *config.Config, logger *slog.Logger) *Workers {
 	return &Workers{
-		store:        st,
-		tb:           tb,
-		cfg:          cfg,
-		logger:       logger,
-		missingPolls: map[int64]int{},
-		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		store:          st,
+		tb:             tb,
+		cfg:            cfg,
+		logger:         logger,
+		missingPolls:   map[int64]int{},
+		deleteAttempts: map[int64]int{},
+		httpClient:     &http.Client{Timeout: 30 * time.Second},
 	}
 }
 

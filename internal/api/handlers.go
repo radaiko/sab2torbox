@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -74,6 +75,11 @@ func (s *Server) writeJSON(w http.ResponseWriter, v any) {
 	}
 }
 
+// validAPIKey reports whether got matches want, in constant time.
+func validAPIKey(got, want string) bool {
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
 // param reads a parameter from the query string, falling back to POST form.
 func param(r *http.Request, key string) string {
 	if v := r.URL.Query().Get(key); v != "" {
@@ -88,7 +94,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
 		_ = r.ParseForm()
 	}
-	if param(r, "apikey") != s.cfg.SABAPIKey {
+	if !validAPIKey(param(r, "apikey"), s.cfg.SABAPIKey) {
 		s.writeJSON(w, ErrorResponse{Status: false, Error: "API Key Incorrect"})
 		return
 	}
@@ -413,6 +419,11 @@ func (s *Server) handleHealGiveUp(w http.ResponseWriter, r *http.Request) {
 // healJobFromURL loads the job named by the {jobID} URL parameter, writing an
 // error response and returning ok=false if it is missing or unparseable.
 func (s *Server) healJobFromURL(w http.ResponseWriter, r *http.Request) (*job.Job, bool) {
+	// These endpoints mutate job state, so they require the SAB API key.
+	if !validAPIKey(param(r, "apikey"), s.cfg.SABAPIKey) {
+		s.writeJSON(w, ErrorResponse{Status: false, Error: "API Key Incorrect"})
+		return nil, false
+	}
 	id, err := strconv.ParseInt(chi.URLParam(r, "jobID"), 10, 64)
 	if err != nil {
 		s.writeJSON(w, ErrorResponse{Status: false, Error: "invalid job id"})

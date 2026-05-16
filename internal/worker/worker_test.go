@@ -309,7 +309,11 @@ func TestDeleterRetriesThenGivesUp(t *testing.T) {
 	j.TorBoxID = 556
 	st.UpdateJob(ctx, j)
 
-	// TorBox keeps failing: the row is kept for the next cycle.
+	old := deleteGiveUpAttempts
+	deleteGiveUpAttempts = 2
+	defer func() { deleteGiveUpAttempts = old }()
+
+	// First failure: the row is kept for the next cycle.
 	if err := w.deleteOnce(ctx); err != nil {
 		t.Fatalf("deleteOnce: %v", err)
 	}
@@ -317,15 +321,12 @@ func TestDeleterRetriesThenGivesUp(t *testing.T) {
 		t.Fatal("job should be kept for retry while the TorBox delete fails")
 	}
 
-	// Past the give-up window, the row is dropped despite the failure.
-	old := deleteGiveUpAfter
-	deleteGiveUpAfter = -time.Second
-	defer func() { deleteGiveUpAfter = old }()
+	// Second failure reaches deleteGiveUpAttempts: the row is dropped.
 	if err := w.deleteOnce(ctx); err != nil {
 		t.Fatalf("deleteOnce (give up): %v", err)
 	}
 	if _, err := st.GetJob(ctx, id); err == nil {
-		t.Error("job row should be dropped once the give-up window has elapsed")
+		t.Error("job row should be dropped once the give-up threshold is reached")
 	}
 }
 
@@ -784,8 +785,8 @@ func TestHealReconcileFinishesHeal(t *testing.T) {
 	if got.State != job.StateImported {
 		t.Fatalf("state: got %s want imported", got.State)
 	}
-	if got.HealCount != 1 {
-		t.Errorf("heal_count: got %d want 1", got.HealCount)
+	if got.HealCount != 0 {
+		t.Errorf("heal_count must reset to 0 on a successful heal: got %d", got.HealCount)
 	}
 	target, _ := os.Readlink(link)
 	want := filepath.Join(newDir, "ep.mkv")
