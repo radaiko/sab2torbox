@@ -63,3 +63,15 @@ func TestHealTransitions(t *testing.T) {
 		}
 	}
 }
+
+func TestManuallyResolvedTransitions(t *testing.T) {
+	if !StateHealFailed.CanTransitionTo(StateManuallyResolved) {
+		t.Error("heal_failed must be able to transition to manually_resolved")
+	}
+	if !StateManuallyResolved.IsTerminal() {
+		t.Error("manually_resolved must be terminal")
+	}
+	if StateImported.CanTransitionTo(StateManuallyResolved) {
+		t.Error("imported must not transition straight to manually_resolved")
+	}
+}
