@@ -1,0 +1,6 @@
+/sab2torbox
+*.db
+*.db-wal
+*.db-shm
+.env
+/config/
