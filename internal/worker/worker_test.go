@@ -687,3 +687,58 @@ func TestHealerDiscoversLibrarySymlinks(t *testing.T) {
 		t.Errorf("bad tracked symlink: %+v", syms[0])
 	}
 }
+
+func TestHealerTriggersResubmission(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, cfg := testWorkers(t, fake)
+	cfg.HealMaxAttempts = 3
+	cfg.HealBackoffInitial = time.Minute
+	ctx := context.Background()
+
+	id, _ := st.CreateJob(ctx, &job.Job{
+		State: job.StateImported, Category: "sonarr", NZBName: "Rel",
+		NZBContent: []byte("<nzb/>"),
+	})
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{
+		JobID: id, SymlinkPath: "/lib/ep.mkv", TargetPath: "/mnt/torbox/Rel/ep.mkv",
+	})
+	syms, _ := st.ListImportedSymlinks(ctx)
+	st.SetSymlinkVerified(ctx, syms[0].ID, true, time.Now())
+
+	if err := w.triggerHeals(ctx); err != nil {
+		t.Fatalf("triggerHeals: %v", err)
+	}
+	got, _ := st.GetJob(ctx, id)
+	if got.State != job.StateHealing {
+		t.Errorf("state: got %s want healing", got.State)
+	}
+	if got.TorBoxID == 0 {
+		t.Error("a new torbox id should be recorded")
+	}
+	if len(fake.created) != 1 {
+		t.Errorf("expected 1 resubmission, got %d", len(fake.created))
+	}
+}
+
+func TestHealerSkipsExhaustedJobs(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, cfg := testWorkers(t, fake)
+	cfg.HealMaxAttempts = 2
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{
+		State: job.StateHealFailed, Category: "c", NZBName: "n", NZBContent: []byte("x"),
+	})
+	j, _ := st.GetJob(ctx, id)
+	j.HealCount = 2 // already at the limit
+	st.UpdateJob(ctx, j)
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{JobID: id, SymlinkPath: "/lib/x.mkv", TargetPath: "/mnt/torbox/N/x.mkv"})
+	syms, _ := st.ListImportedSymlinks(ctx)
+	st.SetSymlinkVerified(ctx, syms[0].ID, true, time.Now())
+
+	if err := w.triggerHeals(ctx); err != nil {
+		t.Fatalf("triggerHeals: %v", err)
+	}
+	if len(fake.created) != 0 {
+		t.Error("a job at HealMaxAttempts must not be resubmitted")
+	}
+}

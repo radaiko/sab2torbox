@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/radaiko/sab2torbox/internal/job"
+	"github.com/radaiko/sab2torbox/internal/torbox"
 )
 
 func (w *Workers) healReconcileOnce(_ context.Context) error { return nil }
@@ -21,6 +23,9 @@ func (w *Workers) healOnce(ctx context.Context) error {
 	}
 	if err := w.detectBrokenSymlinks(ctx); err != nil {
 		w.logger.Error("heal: detecting broken symlinks", "error", err)
+	}
+	if err := w.triggerHeals(ctx); err != nil {
+		w.logger.Error("heal: triggering heals", "error", err)
 	}
 	return nil
 }
@@ -125,4 +130,100 @@ func releaseUnderRoot(webdavRoot, target string) (string, bool) {
 		return "", false
 	}
 	return parts[0], true
+}
+
+// triggerHeals resubmits the stored NZB for every job that has at least one
+// broken symlink and is eligible (not already healing, attempts left, past
+// its backoff). The job transitions to `healing`; healReconcileOnce finishes it.
+func (w *Workers) triggerHeals(ctx context.Context) error {
+	syms, err := w.store.ListImportedSymlinks(ctx)
+	if err != nil {
+		return err
+	}
+	brokenByJob := make(map[int64]int)
+	for _, sym := range syms {
+		if sym.IsBroken {
+			brokenByJob[sym.JobID]++
+		}
+	}
+	for jobID, count := range brokenByJob {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		j, err := w.store.GetJob(ctx, jobID)
+		if err != nil {
+			continue
+		}
+		if j.State != job.StateImported && j.State != job.StateHealFailed {
+			continue // healing already, or deleted — not eligible
+		}
+		if int(j.HealCount) >= w.cfg.HealMaxAttempts {
+			continue // exhausted — manual intervention needed
+		}
+		if j.LastHealedAt != nil {
+			backoff := healBackoff(w.cfg.HealBackoffInitial, j.HealCount)
+			if timeNow().Sub(*j.LastHealedAt) < backoff {
+				continue // still in backoff
+			}
+		}
+		if w.cfg.HealDryRun {
+			w.logger.Info("heal: dry-run, would heal",
+				"job_id", j.ID, "broken_symlinks", count)
+			continue
+		}
+		w.startHeal(ctx, j, count)
+	}
+	return nil
+}
+
+// startHeal resubmits a job's stored NZB to TorBox and moves it to `healing`.
+func (w *Workers) startHeal(ctx context.Context, j *job.Job, brokenCount int) {
+	log := w.logger.With("job_id", j.ID, "nzb_name", j.NZBName)
+	if len(j.NZBContent) == 0 && j.NZBURL == "" {
+		log.Error("heal: no stored NZB to resubmit")
+		w.markHealFailed(ctx, j, "no stored NZB content")
+		return
+	}
+	res, err := w.tb.CreateUsenetDownload(ctx, torbox.CreateRequest{
+		NZBContent: j.NZBContent,
+		NZBName:    j.NZBName + ".nzb",
+		Link:       j.NZBURL,
+	})
+	if err != nil {
+		log.Warn("heal: resubmission failed", "error", err)
+		w.markHealFailed(ctx, j, "resubmission failed: "+err.Error())
+		return
+	}
+	j.State = job.StateHealing
+	j.TorBoxID = int64(res.UsenetDownloadID)
+	j.TorBoxHash = res.Hash
+	j.LastHealError = ""
+	if err := w.store.UpdateJob(ctx, j); err != nil {
+		log.Error("heal: persisting healing state", "error", err)
+		return
+	}
+	log.Info("heal: resubmitted to torbox",
+		"torbox_id", j.TorBoxID, "broken_symlinks", brokenCount)
+}
+
+// markHealFailed records a failed heal attempt and applies backoff via
+// last_healed_at.
+func (w *Workers) markHealFailed(ctx context.Context, j *job.Job, msg string) {
+	now := timeNow()
+	j.State = job.StateHealFailed
+	j.HealCount++
+	j.LastHealedAt = &now
+	j.LastHealError = msg
+	if err := w.store.UpdateJob(ctx, j); err != nil {
+		w.logger.Error("heal: persisting heal_failed", "job_id", j.ID, "error", err)
+	}
+}
+
+// healBackoff is exponential: HealBackoffInitial doubled once per prior attempt.
+func healBackoff(initial time.Duration, count int64) time.Duration {
+	d := initial
+	for i := int64(0); i < count; i++ {
+		d *= 2
+	}
+	return d
 }
