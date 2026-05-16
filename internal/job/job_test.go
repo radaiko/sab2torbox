@@ -27,6 +27,15 @@ func TestCanTransitionTo(t *testing.T) {
 	}
 }
 
+func TestNzoID(t *testing.T) {
+	if got := (&Job{ID: 0}).NzoID(); got != "sab2tb_0" {
+		t.Errorf("NzoID(0): got %q", got)
+	}
+	if got := (&Job{ID: 12345}).NzoID(); got != "sab2tb_12345" {
+		t.Errorf("NzoID(12345): got %q", got)
+	}
+}
+
 func TestIsTerminal(t *testing.T) {
 	if !StateFailed.IsTerminal() || !StateDeleted.IsTerminal() {
 		t.Error("failed and deleted must be terminal")

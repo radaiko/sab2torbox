@@ -77,6 +77,61 @@ func TestControlUsenetDeleteBody(t *testing.T) {
 	}
 }
 
+func TestPingAndHTTPError(t *testing.T) {
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"success":true,"data":[]}`))
+	}))
+	defer ok.Close()
+	if err := NewWithBaseURL("tok", ok.URL+"/v1/api").Ping(context.Background()); err != nil {
+		t.Errorf("Ping ok: %v", err)
+	}
+
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"success":false,"detail":"boom"}`))
+	}))
+	defer bad.Close()
+	err := NewWithBaseURL("tok", bad.URL+"/v1/api").Ping(context.Background())
+	if err == nil {
+		t.Fatal("expected error on HTTP 500")
+	}
+	if !Retryable(err) {
+		t.Error("HTTP 500 error should be retryable")
+	}
+}
+
+func TestRetryableAndDownloadedBytes(t *testing.T) {
+	if Retryable(&APIError{Status: 400}) {
+		t.Error("400 should not be retryable")
+	}
+	if !Retryable(&APIError{Status: 429}) {
+		t.Error("429 should be retryable")
+	}
+	if !Retryable(io.EOF) {
+		t.Error("transport errors should be retryable")
+	}
+	if got := (UsenetDownload{Size: 1000, Progress: 0.5}).DownloadedBytes(); got != 500 {
+		t.Errorf("DownloadedBytes 0.5: got %d", got)
+	}
+	if got := (UsenetDownload{Size: 1000, Progress: 50}).DownloadedBytes(); got != 500 {
+		t.Errorf("DownloadedBytes 50: got %d", got)
+	}
+	if got := (UsenetDownload{Size: 0, Progress: 1}).DownloadedBytes(); got != 0 {
+		t.Errorf("DownloadedBytes size 0: got %d", got)
+	}
+}
+
+func TestNonJSONResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("<html>not json</html>"))
+	}))
+	defer srv.Close()
+	_, err := NewWithBaseURL("tok", srv.URL+"/v1/api").ListUsenet(context.Background())
+	if err == nil {
+		t.Fatal("expected error on non-JSON response")
+	}
+}
+
 func TestCreateUsenetAPIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"success":false,"detail":"bad nzb"}`))

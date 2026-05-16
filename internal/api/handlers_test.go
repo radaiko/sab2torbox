@@ -178,6 +178,101 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+func TestGetConfigAndFullstatus(t *testing.T) {
+	srv, _ := testServer(t)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?mode=get_config&apikey=secret", nil))
+	var cfg ConfigResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("get_config decode: %v", err)
+	}
+	if len(cfg.Config.Categories) != 3 || cfg.Config.Misc.CompleteDir == "" {
+		t.Errorf("get_config: %+v", cfg.Config)
+	}
+
+	rec = httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?mode=fullstatus&apikey=secret", nil))
+	if !strings.Contains(rec.Body.String(), `"status"`) {
+		t.Errorf("fullstatus: %s", rec.Body.String())
+	}
+}
+
+func TestAddURLCreatesAndIsIdempotent(t *testing.T) {
+	srv, st := testServer(t)
+	u := "/api?mode=addurl&apikey=secret&cat=sonarr&name=" +
+		url.QueryEscape("http://idx/x.nzb") + "&nzbname=Rel"
+	get := func() string {
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, u, nil))
+		var resp AddResponse
+		json.Unmarshal(rec.Body.Bytes(), &resp)
+		if !resp.Status || len(resp.NzoIDs) != 1 {
+			t.Fatalf("addurl response: %s", rec.Body.String())
+		}
+		return resp.NzoIDs[0]
+	}
+	if get() != get() {
+		t.Error("addurl not idempotent")
+	}
+	jobs, _ := st.JobsByState(context.Background(), job.StatePending)
+	if len(jobs) != 1 {
+		t.Errorf("expected 1 job, got %d", len(jobs))
+	}
+}
+
+func TestUnknownModeAndMissingFile(t *testing.T) {
+	srv, _ := testServer(t)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?mode=bogus&apikey=secret", nil))
+	if strings.Contains(rec.Body.String(), `"status":true`) {
+		t.Errorf("unknown mode should fail: %s", rec.Body.String())
+	}
+
+	var body strings.Builder
+	mw := multipart.NewWriter(&body)
+	mw.WriteField("cat", "sonarr")
+	mw.Close()
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api?mode=addfile&apikey=secret", strings.NewReader(body.String()))
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	srv.Router().ServeHTTP(rec, req)
+	var resp ErrorResponse
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Status {
+		t.Errorf("addfile without file should fail: %s", rec.Body.String())
+	}
+}
+
+func TestHealthzUnhealthyAndNil(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.health = &fakeHealth{ok: false}
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("unhealthy: got %d want 503", rec.Code)
+	}
+
+	srv.health = nil
+	rec = httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("nil health: got %d want 200", rec.Code)
+	}
+}
+
+func TestQueueDeleteWithoutFiles(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateQueued, Category: "sonarr", NZBName: "Q"})
+	j, _ := st.GetJob(ctx, id)
+	u := "/api?mode=queue&name=delete&value=" + url.QueryEscape(j.NzoID()) + "&apikey=secret"
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, u, nil))
+	if _, err := st.GetJob(ctx, id); err == nil {
+		t.Error("job should be removed by queue delete")
+	}
+}
+
 // fakeDeleter records TorBox delete calls.
 type fakeDeleter struct{ deleted []int64 }
 

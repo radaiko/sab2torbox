@@ -37,6 +37,35 @@ func TestLoadMissingRequired(t *testing.T) {
 	}
 }
 
+func TestSlogLevel(t *testing.T) {
+	cases := map[string]string{"debug": "DEBUG", "warn": "WARN", "error": "ERROR", "info": "INFO", "": "INFO"}
+	for in, want := range cases {
+		if got := (&Config{LogLevel: in}).SlogLevel().String(); got != want {
+			t.Errorf("SlogLevel(%q): got %s want %s", in, got, want)
+		}
+	}
+}
+
+func TestAllowsCategory(t *testing.T) {
+	c := &Config{Categories: []string{"sonarr", "radarr"}}
+	if !c.AllowsCategory("sonarr") {
+		t.Error("sonarr should be allowed")
+	}
+	if c.AllowsCategory("lidarr") {
+		t.Error("lidarr should not be allowed")
+	}
+}
+
+func TestValidateMountNotDir(t *testing.T) {
+	f := t.TempDir() + "/afile"
+	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Config{WebDAVMountRoot: f}).validateMount(); err == nil {
+		t.Error("expected error when mount root is a file")
+	}
+}
+
 func TestValidateMountMissing(t *testing.T) {
 	c := &Config{WebDAVMountRoot: "/nonexistent/path/xyz"}
 	if err := c.validateMount(); err == nil {

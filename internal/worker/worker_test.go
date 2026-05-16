@@ -178,6 +178,62 @@ func TestPollerMarksFailed(t *testing.T) {
 	}
 }
 
+func TestPollerSkipsJobMissingFromList(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, _ := testWorkers(t, fake)
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateQueued, Category: "sonarr", NZBName: "Ghost"})
+	j, _ := st.GetJob(ctx, id)
+	j.TorBoxID = 999
+	st.UpdateJob(ctx, j)
+	fake.list = nil // job 999 is not in the TorBox list
+	if err := w.pollOnce(ctx); err != nil {
+		t.Fatalf("pollOnce: %v", err)
+	}
+	got, _ := st.GetJob(ctx, id)
+	if got.State != job.StateQueued {
+		t.Errorf("missing job should stay queued, got %s", got.State)
+	}
+}
+
+func TestPollerCompletedWaitsForMissingPath(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, _ := testWorkers(t, fake)
+	ctx := context.Background()
+	oldInterval, oldTimeout := pathRetryInterval, pathRetryTimeout
+	pathRetryInterval, pathRetryTimeout = time.Millisecond, 10*time.Millisecond
+	defer func() { pathRetryInterval, pathRetryTimeout = oldInterval, oldTimeout }()
+
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateDownloading, Category: "sonarr", NZBName: "NoDir"})
+	j, _ := st.GetJob(ctx, id)
+	j.TorBoxID = 400
+	st.UpdateJob(ctx, j)
+	fake.list = []torbox.UsenetDownload{{
+		ID: 400, Name: "NoDir.Missing", Size: 100, Progress: 1,
+		DownloadFinished: true, DownloadPresent: true,
+	}}
+	if err := w.pollOnce(ctx); err != nil {
+		t.Fatalf("pollOnce: %v", err)
+	}
+	got, _ := st.GetJob(ctx, id)
+	if got.State == job.StateCompleted {
+		t.Error("job should not complete while webdav path is missing")
+	}
+}
+
+func TestRunStartsAndStopsOnContextCancel(t *testing.T) {
+	w, _, _ := testWorkers(t, &fakeTorBox{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { w.Run(ctx); close(done) }()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not stop after context cancel")
+	}
+}
+
 func TestReaperRemovesOldImported(t *testing.T) {
 	fake := &fakeTorBox{}
 	w, st, _ := testWorkers(t, fake)
