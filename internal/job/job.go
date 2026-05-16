@@ -16,6 +16,8 @@ const (
 	StateImported    State = "imported"    // Sonarr has read the history entry
 	StateDeleted     State = "deleted"     // removed from TorBox at Sonarr's request
 	StateFailed      State = "failed"      // terminal error
+	StateHealing    State = "healing"     // resubmitted to TorBox, awaiting the new download
+	StateHealFailed State = "heal_failed" // resubmission failed; retried with backoff
 )
 
 // transitions lists the allowed next states for each state.
@@ -25,7 +27,9 @@ var transitions = map[State][]State{
 	StateQueued:      {StateDownloading, StateCompleted, StateFailed},
 	StateDownloading: {StateCompleted, StateFailed},
 	StateCompleted:   {StateImported, StateDeleted, StateFailed},
-	StateImported:    {StateDeleted, StateFailed},
+	StateImported:    {StateDeleted, StateFailed, StateHealing},
+	StateHealing:     {StateImported, StateHealFailed},
+	StateHealFailed:  {StateHealing},
 	StateDeleted:     {},
 	StateFailed:      {},
 }
@@ -60,6 +64,9 @@ type Job struct {
 	TotalBytes      int64
 	DownloadedBytes int64
 	ProgressPct     int
+	HealCount     int64
+	LastHealedAt  *time.Time
+	LastHealError string
 	ETASeconds      int64
 	FailMessage     string
 	CreatedAt       time.Time
@@ -70,6 +77,18 @@ type Job struct {
 
 // NzoID returns the SABnzbd nzo_id Sonarr uses to reference this job.
 func (j *Job) NzoID() string { return "sab2tb_" + itoa(j.ID) }
+
+// ImportedSymlink tracks a symlink Sonarr/Radarr moved into its library, so
+// the healer can repair it if TorBox rotates the target out of storage.
+type ImportedSymlink struct {
+	ID           int64
+	JobID        int64
+	SymlinkPath  string
+	TargetPath   string
+	DiscoveredAt time.Time
+	LastVerified *time.Time
+	IsBroken     bool
+}
 
 func itoa(n int64) string {
 	if n == 0 {

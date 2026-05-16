@@ -44,3 +44,22 @@ func TestIsTerminal(t *testing.T) {
 		t.Error("pending and completed must not be terminal")
 	}
 }
+
+func TestHealTransitions(t *testing.T) {
+	cases := []struct {
+		from, to State
+		want     bool
+	}{
+		{StateImported, StateHealing, true},
+		{StateHealing, StateImported, true},
+		{StateHealing, StateHealFailed, true},
+		{StateHealFailed, StateHealing, true},
+		{StateHealing, StateDeleted, false},
+		{StateHealFailed, StateImported, false},
+	}
+	for _, c := range cases {
+		if got := c.from.CanTransitionTo(c.to); got != c.want {
+			t.Errorf("%s -> %s: got %v, want %v", c.from, c.to, got, c.want)
+		}
+	}
+}
