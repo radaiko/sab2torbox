@@ -38,8 +38,8 @@ type Config struct {
 	HealDryRun         bool          `envconfig:"HEAL_DRY_RUN" default:"false"`
 	HealMaxAttempts    int           `envconfig:"HEAL_MAX_ATTEMPTS" default:"3"`
 	HealBackoffInitial time.Duration `envconfig:"HEAL_BACKOFF_INITIAL" default:"5m"`
-	HealWebhookURL    string   `envconfig:"HEAL_WEBHOOK_URL"`
-	HealWebhookEvents []string `envconfig:"HEAL_WEBHOOK_EVENTS" default:"failed"`
+	HealWebhookURL     string        `envconfig:"HEAL_WEBHOOK_URL"`
+	HealWebhookEvents  []string      `envconfig:"HEAL_WEBHOOK_EVENTS" default:"failed"`
 }
 
 // Load reads configuration from the environment and validates it.
