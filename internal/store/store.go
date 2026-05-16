@@ -245,6 +245,118 @@ func (s *Store) ReapImported(ctx context.Context, cutoff time.Time) (int64, erro
 	return res.RowsAffected()
 }
 
+// importedSymlinkColumns is the canonical column order for scanning.
+const importedSymlinkColumns = `id, job_id, symlink_path, target_path,
+	discovered_at, last_verified, is_broken`
+
+// UpsertImportedSymlink inserts a tracked symlink, or updates its job_id and
+// target if the same symlink_path is recorded again.
+func (s *Store) UpsertImportedSymlink(ctx context.Context, sym *job.ImportedSymlink) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO imported_symlinks (job_id, symlink_path, target_path)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(symlink_path) DO UPDATE SET
+		   job_id = excluded.job_id, target_path = excluded.target_path`,
+		sym.JobID, sym.SymlinkPath, sym.TargetPath)
+	if err != nil {
+		return fmt.Errorf("upserting imported symlink: %w", err)
+	}
+	return nil
+}
+
+// ListImportedSymlinks returns every tracked symlink.
+func (s *Store) ListImportedSymlinks(ctx context.Context) ([]*job.ImportedSymlink, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+importedSymlinkColumns+` FROM imported_symlinks ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing imported symlinks: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*job.ImportedSymlink
+	for rows.Next() {
+		var sym job.ImportedSymlink
+		var verified sql.NullTime
+		var broken int
+		if err := rows.Scan(&sym.ID, &sym.JobID, &sym.SymlinkPath, &sym.TargetPath,
+			&sym.DiscoveredAt, &verified, &broken); err != nil {
+			return nil, err
+		}
+		if verified.Valid {
+			sym.LastVerified = &verified.Time
+		}
+		sym.IsBroken = broken != 0
+		out = append(out, &sym)
+	}
+	return out, rows.Err()
+}
+
+// SetSymlinkVerified records a verification result for one tracked symlink.
+func (s *Store) SetSymlinkVerified(ctx context.Context, id int64, broken bool, at time.Time) error {
+	b := 0
+	if broken {
+		b = 1
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE imported_symlinks SET is_broken=?, last_verified=? WHERE id=?`,
+		b, at, id); err != nil {
+		return fmt.Errorf("setting symlink verified: %w", err)
+	}
+	return nil
+}
+
+// UpdateSymlinkTarget repoints a tracked symlink and clears its broken flag.
+func (s *Store) UpdateSymlinkTarget(ctx context.Context, id int64, target string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE imported_symlinks SET target_path=?, is_broken=0 WHERE id=?`,
+		target, id); err != nil {
+		return fmt.Errorf("updating symlink target: %w", err)
+	}
+	return nil
+}
+
+// DeleteImportedSymlink removes one tracked symlink row.
+func (s *Store) DeleteImportedSymlink(ctx context.Context, id int64) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM imported_symlinks WHERE id=?`, id); err != nil {
+		return fmt.Errorf("deleting imported symlink: %w", err)
+	}
+	return nil
+}
+
+// SymlinkCounts returns the total tracked symlinks and how many are broken.
+func (s *Store) SymlinkCounts(ctx context.Context) (tracked, broken int64, err error) {
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*), COALESCE(SUM(is_broken), 0) FROM imported_symlinks`).
+		Scan(&tracked, &broken)
+	if err != nil {
+		return 0, 0, fmt.Errorf("counting symlinks: %w", err)
+	}
+	return tracked, broken, nil
+}
+
+// CountJobsByState returns how many jobs are in any of the given states.
+func (s *Store) CountJobsByState(ctx context.Context, states ...job.State) (int64, error) {
+	if len(states) == 0 {
+		return 0, nil
+	}
+	placeholders := ""
+	args := make([]any, len(states))
+	for i, st := range states {
+		if i > 0 {
+			placeholders += ","
+		}
+		placeholders += "?"
+		args[i] = st
+	}
+	var n int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM jobs WHERE state IN (`+placeholders+`)`, args...).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("counting jobs by state: %w", err)
+	}
+	return n, nil
+}
+
 func nullStr(s string) any {
 	if s == "" {
 		return nil
