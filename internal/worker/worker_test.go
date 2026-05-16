@@ -810,3 +810,29 @@ func TestHealReconcileMarksFailedDownload(t *testing.T) {
 		t.Errorf("state: got %s want heal_failed", got.State)
 	}
 }
+
+func TestHealerDryRunDoesNotResubmit(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, cfg := testWorkers(t, fake)
+	cfg.HealMaxAttempts = 3
+	cfg.HealDryRun = true
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{
+		State: job.StateImported, Category: "c", NZBName: "n", NZBContent: []byte("x"),
+	})
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{
+		JobID: id, SymlinkPath: "/lib/x.mkv", TargetPath: "/mnt/torbox/N/x.mkv",
+	})
+	syms, _ := st.ListImportedSymlinks(ctx)
+	st.SetSymlinkVerified(ctx, syms[0].ID, true, time.Now())
+
+	if err := w.triggerHeals(ctx); err != nil {
+		t.Fatalf("triggerHeals: %v", err)
+	}
+	if len(fake.created) != 0 {
+		t.Error("dry-run must not resubmit anything to TorBox")
+	}
+	if got, _ := st.GetJob(ctx, id); got.State != job.StateImported {
+		t.Errorf("dry-run must leave the job state unchanged, got %s", got.State)
+	}
+}

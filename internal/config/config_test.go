@@ -159,3 +159,17 @@ func TestHealRequiresLibraryRootsWhenEnabled(t *testing.T) {
 		t.Fatalf("Load with valid heal config: %v", err)
 	}
 }
+
+func TestHealRejectsZeroMaxAttempts(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SAB2TORBOX_TORBOX_API_TOKEN", "t")
+	t.Setenv("SAB2TORBOX_SAB_API_KEY", "k")
+	t.Setenv("SAB2TORBOX_WEBDAV_MOUNT_ROOT", dir)
+	t.Setenv("SAB2TORBOX_SYMLINK_ROOT", dir)
+	t.Setenv("SAB2TORBOX_HEAL_ENABLED", "true")
+	t.Setenv("SAB2TORBOX_HEAL_LIBRARY_ROOTS", dir)
+	t.Setenv("SAB2TORBOX_HEAL_MAX_ATTEMPTS", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error: HEAL_MAX_ATTEMPTS=0 means nothing ever heals")
+	}
+}

@@ -295,7 +295,9 @@ func (w *Workers) startHeal(ctx context.Context, j *job.Job, brokenCount int) {
 	j.TorBoxHash = res.Hash
 	j.LastHealError = ""
 	if err := w.store.UpdateJob(ctx, j); err != nil {
-		log.Error("heal: persisting healing state", "error", err)
+		log.Error("heal: persisting healing state, marking failed to avoid a duplicate resubmit",
+			"error", err)
+		w.markHealFailed(ctx, j, "persisting healing state failed: "+err.Error())
 		return
 	}
 	log.Info("heal: resubmitted to torbox",

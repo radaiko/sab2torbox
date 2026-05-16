@@ -69,6 +69,9 @@ func Load() (*Config, error) {
 				return nil, fmt.Errorf("heal library root %q is not a directory", root)
 			}
 		}
+		if c.HealMaxAttempts <= 0 {
+			return nil, fmt.Errorf("HEAL_MAX_ATTEMPTS must be greater than 0")
+		}
 	}
 	return &c, nil
 }
