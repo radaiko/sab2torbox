@@ -7,11 +7,17 @@ services:
       - SAB2TORBOX_TORBOX_API_TOKEN=${TORBOX_API_TOKEN}
       - SAB2TORBOX_SAB_API_KEY=${SAB_API_KEY}
       - SAB2TORBOX_WEBDAV_MOUNT_ROOT=/mnt/torbox
-      - SAB2TORBOX_WEBDAV_USENET_SUBPATH=usenet
+      # Leave empty: TorBox creates one folder per release directly under the
+      # mount root. Set only if your WebDAV nests releases under a subdir.
+      - SAB2TORBOX_WEBDAV_USENET_SUBPATH=
       - SAB2TORBOX_DATABASE_PATH=/config/sab2torbox.db
       - SAB2TORBOX_POLL_INTERVAL=10s
       - SAB2TORBOX_LOG_LEVEL=info
       - SAB2TORBOX_CATEGORIES=sonarr,radarr,sonarr-anime
+      # Optional: auto-force TorBox's WebDAV refresh on completion. Set both
+      # credentials to enable; the password is your TorBox API token.
+      - SAB2TORBOX_TORBOX_WEBDAV_USER=${TORBOX_WEBDAV_USER:-}
+      - SAB2TORBOX_TORBOX_WEBDAV_PASS=${TORBOX_WEBDAV_PASS:-}
       - TZ=Europe/Vienna
     ports:
       - "8181:8080"

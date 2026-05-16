@@ -4,9 +4,12 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -321,5 +324,129 @@ func TestReaperRemovesOldImported(t *testing.T) {
 	}
 	if _, err := st.GetJob(ctx, id); err == nil {
 		t.Error("expected old imported job to be reaped")
+	}
+}
+
+// webdavRefreshServer is an httptest server standing in for TorBox's
+// /refresh endpoint; it counts authenticated hits.
+func webdavRefreshServer(t *testing.T, hits *atomic.Int32, status int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if u, p, _ := r.BasicAuth(); u != "wuser" || p != "wpass" {
+			t.Errorf("bad basic auth: %q/%q", u, p)
+		}
+		hits.Add(1)
+		w.WriteHeader(status)
+	}))
+}
+
+// shortPathRetry shrinks the resolveStoragePath retry window for tests.
+func shortPathRetry(t *testing.T) {
+	t.Helper()
+	oldI, oldT := pathRetryInterval, pathRetryTimeout
+	pathRetryInterval, pathRetryTimeout = time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { pathRetryInterval, pathRetryTimeout = oldI, oldT })
+}
+
+func TestPollerRefreshesWebDAVWhenAllFinished(t *testing.T) {
+	var hits atomic.Int32
+	srv := webdavRefreshServer(t, &hits, http.StatusOK)
+	defer srv.Close()
+	shortPathRetry(t)
+
+	w, st, _ := testWorkers(t, &fakeTorBox{})
+	w.cfg.TorBoxWebDAVUser = "wuser"
+	w.cfg.TorBoxWebDAVPass = "wpass"
+	w.cfg.TorBoxWebDAVRefreshURL = srv.URL
+	w.cfg.WebDAVRefreshCooldown = time.Minute
+
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateDownloading, Category: "sonarr", NZBName: "Done"})
+	j, _ := st.GetJob(ctx, id)
+	j.TorBoxID = 1
+	st.UpdateJob(ctx, j)
+	// TorBox reports finished, but the release folder is not on the mount yet.
+	fake := w.tb.(*fakeTorBox)
+	fake.list = []torbox.UsenetDownload{{
+		ID: 1, Name: "Done.Missing", Size: 100, Progress: 1,
+		DownloadFinished: true, DownloadPresent: true,
+	}}
+
+	if err := w.pollOnce(ctx); err != nil {
+		t.Fatalf("pollOnce: %v", err)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("expected 1 webdav refresh, got %d", hits.Load())
+	}
+	// A second poll within the cooldown must not refresh again.
+	if err := w.pollOnce(ctx); err != nil {
+		t.Fatalf("pollOnce 2: %v", err)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("cooldown breached: %d refreshes", hits.Load())
+	}
+}
+
+func TestPollerSkipsRefreshWhileDownloadOngoing(t *testing.T) {
+	var hits atomic.Int32
+	srv := webdavRefreshServer(t, &hits, http.StatusOK)
+	defer srv.Close()
+	shortPathRetry(t)
+
+	w, st, _ := testWorkers(t, &fakeTorBox{})
+	w.cfg.TorBoxWebDAVUser = "wuser"
+	w.cfg.TorBoxWebDAVPass = "wpass"
+	w.cfg.TorBoxWebDAVRefreshURL = srv.URL
+	w.cfg.WebDAVRefreshCooldown = time.Minute
+
+	ctx := context.Background()
+	a, _ := st.CreateJob(ctx, &job.Job{State: job.StateDownloading, Category: "sonarr", NZBName: "A"})
+	ja, _ := st.GetJob(ctx, a)
+	ja.TorBoxID = 1
+	st.UpdateJob(ctx, ja)
+	b, _ := st.CreateJob(ctx, &job.Job{State: job.StateDownloading, Category: "sonarr", NZBName: "B"})
+	jb, _ := st.GetJob(ctx, b)
+	jb.TorBoxID = 2
+	st.UpdateJob(ctx, jb)
+
+	fake := w.tb.(*fakeTorBox)
+	fake.list = []torbox.UsenetDownload{
+		{ID: 1, Name: "A.Missing", Size: 100, Progress: 1, DownloadFinished: true, DownloadPresent: true},
+		{ID: 2, Name: "B", Size: 100, Progress: 0.5, DownloadState: "downloading"},
+	}
+	if err := w.pollOnce(ctx); err != nil {
+		t.Fatalf("pollOnce: %v", err)
+	}
+	if hits.Load() != 0 {
+		t.Errorf("must not refresh while a download is still running, got %d", hits.Load())
+	}
+}
+
+func TestPollerWebDAVRefreshBacksOffOn429(t *testing.T) {
+	var hits atomic.Int32
+	srv := webdavRefreshServer(t, &hits, http.StatusTooManyRequests)
+	defer srv.Close()
+	shortPathRetry(t)
+
+	w, st, _ := testWorkers(t, &fakeTorBox{})
+	w.cfg.TorBoxWebDAVUser = "wuser"
+	w.cfg.TorBoxWebDAVPass = "wpass"
+	w.cfg.TorBoxWebDAVRefreshURL = srv.URL
+	w.cfg.WebDAVRefreshCooldown = time.Nanosecond // cooldown alone would not block
+
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateDownloading, Category: "sonarr", NZBName: "Done"})
+	j, _ := st.GetJob(ctx, id)
+	j.TorBoxID = 1
+	st.UpdateJob(ctx, j)
+	fake := w.tb.(*fakeTorBox)
+	fake.list = []torbox.UsenetDownload{{
+		ID: 1, Name: "Done.Missing", Size: 100, Progress: 1,
+		DownloadFinished: true, DownloadPresent: true,
+	}}
+	w.pollOnce(ctx) // first hit -> 429 -> backoff
+	w.pollOnce(ctx) // blocked by the backoff despite the tiny cooldown
+	if hits.Load() != 1 {
+		t.Errorf("429 should trigger backoff; got %d refresh attempts", hits.Load())
 	}
 }

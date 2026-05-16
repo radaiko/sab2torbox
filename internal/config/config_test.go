@@ -22,11 +22,32 @@ func TestLoadDefaults(t *testing.T) {
 	if c.PollInterval != 10*time.Second {
 		t.Errorf("PollInterval default: %v", c.PollInterval)
 	}
-	if c.UsenetPath() != dir+"/usenet" {
-		t.Errorf("UsenetPath: %q", c.UsenetPath())
+	if c.UsenetPath() != dir {
+		t.Errorf("UsenetPath default should be the mount root: %q", c.UsenetPath())
 	}
 	if len(c.Categories) != 3 {
 		t.Errorf("Categories default: %v", c.Categories)
+	}
+	if c.TorBoxWebDAVRefreshURL != "https://webdav.torbox.app/refresh" {
+		t.Errorf("refresh URL default: %q", c.TorBoxWebDAVRefreshURL)
+	}
+	if c.WebDAVRefreshCooldown != 2*time.Minute {
+		t.Errorf("refresh cooldown default: %v", c.WebDAVRefreshCooldown)
+	}
+	if c.WebDAVRefreshEnabled() {
+		t.Error("WebDAV refresh must be disabled without credentials")
+	}
+}
+
+func TestWebDAVRefreshEnabled(t *testing.T) {
+	if !(&Config{TorBoxWebDAVUser: "u", TorBoxWebDAVPass: "p"}).WebDAVRefreshEnabled() {
+		t.Error("should be enabled when both credentials are set")
+	}
+	if (&Config{TorBoxWebDAVUser: "u"}).WebDAVRefreshEnabled() {
+		t.Error("should be disabled when password is missing")
+	}
+	if (&Config{TorBoxWebDAVPass: "p"}).WebDAVRefreshEnabled() {
+		t.Error("should be disabled when user is missing")
 	}
 }
 

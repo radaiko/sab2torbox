@@ -4,6 +4,7 @@ package worker
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -31,6 +32,11 @@ type Workers struct {
 	// has been absent from the TorBox list. Touched only by the single
 	// poller goroutine, so it needs no lock.
 	missingPolls map[int64]int
+
+	// WebDAV /refresh state, also poller-goroutine-only.
+	httpClient         *http.Client
+	lastWebDAVRefresh  time.Time
+	webdavBackoffUntil time.Time
 }
 
 // New constructs a Workers.
@@ -41,6 +47,7 @@ func New(st *store.Store, tb TorBoxAPI, cfg *config.Config, logger *slog.Logger)
 		cfg:          cfg,
 		logger:       logger,
 		missingPolls: map[int64]int{},
+		httpClient:   &http.Client{Timeout: 30 * time.Second},
 	}
 }
 

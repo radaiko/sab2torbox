@@ -20,7 +20,7 @@ rclone-mounted filesystem* — a rename, not a byte copy. The result is a
          │ import (rename)          └──────────────────────────┘
          ▼                                                      │
    ┌──────────────────────── rclone WebDAV mount ────────────────┘
-   │  /mnt/torbox/usenet/<release>/   ◀── files appear here
+   │  /mnt/torbox/<release>/          ◀── TorBox puts a folder here
    │  /mnt/torbox/media/...           ◀── Sonarr library (SAME mount)
    └──────────────────────────────────────────────────────────────
 ```
@@ -42,8 +42,27 @@ rclone-mounted filesystem* — a rename, not a byte copy. The result is a
 >
 > If the library is on a different filesystem, Sonarr's import becomes a full
 > byte-for-byte copy — slow, and it defeats the entire zero-storage purpose.
-> Keep both the Usenet download path and the media library under the one
-> rclone mount (e.g. `/mnt/torbox/usenet/...` and `/mnt/torbox/media/...`).
+> Keep both the Usenet download folders and the media library under the one
+> rclone mount (e.g. `/mnt/torbox/<release>/` and `/mnt/torbox/media/...`).
+
+## ⚠️ WebDAV layout: folder mode required
+
+> sab2torbox expects TorBox's WebDAV in **folder mode** — TorBox creates one
+> folder per completed download, named after the release, with the media
+> file(s) inside it:
+>
+> ```
+> <WEBDAV_MOUNT_ROOT>/<release name>/<release>.mkv
+> ```
+>
+> A **flat layout** (files written directly into the mount root with no
+> per-release folder) is **not supported** — sab2torbox locates a release by
+> its folder. If TorBox is configured for flat/local-files output, switch it
+> back to folder mode.
+>
+> TorBox places these folders **directly under the mount root** — it does *not*
+> create a `usenet/` subfolder. Leave `SAB2TORBOX_WEBDAV_USENET_SUBPATH` empty
+> unless your particular mount nests releases under a subdirectory.
 
 ## Quickstart
 
@@ -115,21 +134,49 @@ All configuration is via `SAB2TORBOX_*` environment variables.
 | `SAB2TORBOX_TORBOX_API_TOKEN` | yes | — | TorBox API token (torbox.app/settings) |
 | `SAB2TORBOX_SAB_API_KEY` | yes | — | API key Sonarr/Radarr authenticate with |
 | `SAB2TORBOX_WEBDAV_MOUNT_ROOT` | yes | — | Host path of the rclone WebDAV mount |
-| `SAB2TORBOX_WEBDAV_USENET_SUBPATH` | no | `usenet` | Subpath under the mount where downloads appear |
+| `SAB2TORBOX_WEBDAV_USENET_SUBPATH` | no | _(empty)_ | Subpath under the mount root where release folders appear; empty = mount root |
 | `SAB2TORBOX_LISTEN_ADDR` | no | `:8080` | HTTP bind address |
 | `SAB2TORBOX_DATABASE_PATH` | no | `/config/sab2torbox.db` | SQLite database path |
 | `SAB2TORBOX_POLL_INTERVAL` | no | `10s` | How often to poll TorBox for in-flight jobs |
 | `SAB2TORBOX_LOG_LEVEL` | no | `info` | `debug`, `info`, `warn`, `error` |
 | `SAB2TORBOX_CATEGORIES` | no | `sonarr,radarr,sonarr-anime` | Comma-separated allowed categories |
+| `SAB2TORBOX_TORBOX_WEBDAV_USER` | no | — | TorBox WebDAV username — set with `_PASS` to enable the WebDAV refresh |
+| `SAB2TORBOX_TORBOX_WEBDAV_PASS` | no | — | TorBox WebDAV password (normally your API token) |
+| `SAB2TORBOX_TORBOX_WEBDAV_REFRESH_URL` | no | `https://webdav.torbox.app/refresh` | Endpoint hit to force a WebDAV refresh |
+| `SAB2TORBOX_TORBOX_WEBDAV_REFRESH_COOLDOWN` | no | `2m` | Minimum gap between forced refreshes |
+
+## Speeding up completion (optional WebDAV refresh)
+
+TorBox's WebDAV listing refreshes only **every ~15 minutes** — a deliberate
+limit, since listing is database-heavy. So a finished download can take up to
+15 minutes to appear on the mount, and Sonarr can't import until it does.
+
+sab2torbox can cut that to seconds. Set `SAB2TORBOX_TORBOX_WEBDAV_USER` and
+`SAB2TORBOX_TORBOX_WEBDAV_PASS` (your TorBox WebDAV credentials — the password
+is normally your API token) and it will hit TorBox's `/refresh` endpoint to
+force the listing to update.
+
+To stay a good citizen of a deliberately rate-limited endpoint, the refresh:
+
+- **only fires once every active download has finished** — while anything is
+  still transferring, TorBox's own 15-minute cycle is left to handle it;
+- is **debounced** by `SAB2TORBOX_TORBOX_WEBDAV_REFRESH_COOLDOWN` (default 2m);
+- **backs off for 15 minutes** if TorBox returns HTTP 429.
+
+Leave the credentials unset to disable the feature entirely.
 
 ## Troubleshooting
 
 **Files don't appear after a download completes.**
-TorBox flags a download complete a few seconds before its WebDAV listing
-updates. sab2torbox retries the expected path for 30s, then logs a warning and
-retries on the next poll. If files never appear, lower rclone's
-`--dir-cache-time`, or check that `WEBDAV_USENET_SUBPATH` matches your mount
-layout.
+TorBox's WebDAV listing refreshes only every ~15 minutes, so a finished
+download can take that long to surface on the mount. Enable the optional
+WebDAV refresh (see *Speeding up completion* above) to force it within seconds.
+
+**Downloads stay in the queue forever / `waiting for webdav path` in the logs.**
+sab2torbox can't find the release folder. Either TorBox's WebDAV is in flat
+mode (unsupported — switch it to folder mode), or `WEBDAV_USENET_SUBPATH` is
+set wrong (it should normally be empty, since TorBox puts release folders
+directly under the mount root).
 
 **Sonarr import is slow / copies bytes.**
 The library root is not on the rclone WebDAV mount. Move it onto the same mount
@@ -168,8 +215,14 @@ Discovered while building against the TorBox v1 API:
   may serialize as either a JSON number or a quoted string. sab2torbox parses
   both via a defensive `FlexInt` type.
 - **`progress` is a float 0.0–1.0**, not a 0–100 percentage.
-- Completed files appear on the WebDAV mount at
-  `<usenet-subpath>/<TorBox download name>/`.
+- Completed downloads appear as one folder per release **directly under the
+  mount root** — `<WEBDAV_MOUNT_ROOT>/<TorBox download name>/` — with the media
+  file(s) inside. TorBox does not create a `usenet/` subfolder.
+- TorBox's `name` is unstable across records (e.g. `DD51` vs `DD 51` vs
+  `DD+51`), but the on-disk *folder* always matches the `name` that `mylist`
+  returns, so sab2torbox resolves the folder by that name.
+- The WebDAV listing refreshes only every ~15 minutes; hitting `/refresh`
+  forces it (see *Speeding up completion*).
 
 ## License
 

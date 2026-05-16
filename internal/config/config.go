@@ -16,12 +16,20 @@ type Config struct {
 	TorBoxAPIToken      string        `envconfig:"TORBOX_API_TOKEN" required:"true"`
 	SABAPIKey           string        `envconfig:"SAB_API_KEY" required:"true"`
 	WebDAVMountRoot     string        `envconfig:"WEBDAV_MOUNT_ROOT" required:"true"`
-	WebDAVUsenetSubpath string        `envconfig:"WEBDAV_USENET_SUBPATH" default:"usenet"`
+	WebDAVUsenetSubpath string        `envconfig:"WEBDAV_USENET_SUBPATH"`
 	ListenAddr          string        `envconfig:"LISTEN_ADDR" default:":8080"`
 	DatabasePath        string        `envconfig:"DATABASE_PATH" default:"/config/sab2torbox.db"`
 	PollInterval        time.Duration `envconfig:"POLL_INTERVAL" default:"10s"`
 	LogLevel            string        `envconfig:"LOG_LEVEL" default:"info"`
 	Categories          []string      `envconfig:"CATEGORIES" default:"sonarr,radarr,sonarr-anime"`
+
+	// TorBox WebDAV /refresh integration. TorBox's WebDAV listing only
+	// refreshes every 15 minutes; hitting /refresh forces it sooner. The
+	// feature is active only when both credentials are set.
+	TorBoxWebDAVUser       string        `envconfig:"TORBOX_WEBDAV_USER"`
+	TorBoxWebDAVPass       string        `envconfig:"TORBOX_WEBDAV_PASS"`
+	TorBoxWebDAVRefreshURL string        `envconfig:"TORBOX_WEBDAV_REFRESH_URL" default:"https://webdav.torbox.app/refresh"`
+	WebDAVRefreshCooldown  time.Duration `envconfig:"TORBOX_WEBDAV_REFRESH_COOLDOWN" default:"2m"`
 }
 
 // Load reads configuration from the environment and validates it.
@@ -48,7 +56,10 @@ func (c *Config) validateMount() error {
 	return nil
 }
 
-// UsenetPath returns the host filesystem path where TorBox Usenet downloads appear.
+// UsenetPath returns the host filesystem path under which TorBox creates one
+// folder per completed Usenet download. With an empty WebDAVUsenetSubpath
+// (the default) this is the mount root itself, which matches TorBox's WebDAV
+// layout — TorBox does not nest releases under a "usenet" folder.
 func (c *Config) UsenetPath() string {
 	return filepath.Join(c.WebDAVMountRoot, c.WebDAVUsenetSubpath)
 }
@@ -65,6 +76,12 @@ func (c *Config) SlogLevel() slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+// WebDAVRefreshEnabled reports whether the TorBox WebDAV /refresh integration
+// is configured. It activates only when both WebDAV credentials are present.
+func (c *Config) WebDAVRefreshEnabled() bool {
+	return c.TorBoxWebDAVUser != "" && c.TorBoxWebDAVPass != ""
 }
 
 // AllowsCategory reports whether cat is in the configured category allowlist.

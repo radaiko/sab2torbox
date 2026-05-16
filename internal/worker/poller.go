@@ -20,6 +20,16 @@ var activeStates = []job.State{job.StateQueued, job.StateDownloading}
 // transient mylist hiccup while still catching a download TorBox has dropped.
 var missingPollThreshold = 6
 
+// reconcileResult classifies a job after one poll so pollOnce can decide
+// whether to force a TorBox WebDAV refresh.
+type reconcileResult int
+
+const (
+	reconcileSettled        reconcileResult = iota // completed or failed; nothing pending
+	reconcileOngoing                               // still transferring on TorBox
+	reconcileAwaitingWebDAV                        // finished on TorBox, file not on the mount yet
+)
+
 // pollOnce fetches the TorBox list once and reconciles every active job.
 func (w *Workers) pollOnce(ctx context.Context) error {
 	jobs, err := w.store.JobsByState(ctx, activeStates...)
@@ -40,6 +50,7 @@ func (w *Workers) pollOnce(ctx context.Context) error {
 		byID[int64(d.ID)] = d
 	}
 	stillActive := make(map[int64]bool, len(jobs))
+	var ongoing, awaiting bool
 	for _, j := range jobs {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -47,11 +58,18 @@ func (w *Workers) pollOnce(ctx context.Context) error {
 		stillActive[j.TorBoxID] = true
 		rec, ok := byID[j.TorBoxID]
 		if !ok {
-			w.handleMissing(ctx, j)
+			if failed := w.handleMissing(ctx, j); !failed {
+				ongoing = true // unknown state; treat as not finished
+			}
 			continue
 		}
-		delete(w.missingPolls, j.TorBoxID) // present again; reset the counter
-		w.reconcile(ctx, j, rec)
+		delete(w.missingPolls, j.TorBoxID)
+		switch w.reconcile(ctx, j, rec) {
+		case reconcileOngoing:
+			ongoing = true
+		case reconcileAwaitingWebDAV:
+			awaiting = true
+		}
 	}
 	// Drop miss counters for jobs that are no longer active.
 	for tbID := range w.missingPolls {
@@ -59,33 +77,42 @@ func (w *Workers) pollOnce(ctx context.Context) error {
 			delete(w.missingPolls, tbID)
 		}
 	}
+	// Force a WebDAV refresh only when downloads have finished but their files
+	// have not surfaced yet, and nothing is still transferring -- otherwise
+	// TorBox's own 15-minute refresh will catch them.
+	if awaiting && !ongoing {
+		w.maybeRefreshWebDAV(ctx)
+	}
 	return nil
 }
 
 // handleMissing tracks an active job that did not appear in the TorBox list.
 // After missingPollThreshold consecutive absences it fails the job so a
-// download TorBox has silently dropped does not stay stuck forever.
-func (w *Workers) handleMissing(ctx context.Context, j *job.Job) {
+// download TorBox has silently dropped does not stay stuck forever. It reports
+// whether the job was failed.
+func (w *Workers) handleMissing(ctx context.Context, j *job.Job) bool {
 	w.missingPolls[j.TorBoxID]++
 	n := w.missingPolls[j.TorBoxID]
 	log := w.logger.With("job_id", j.ID, "torbox_id", j.TorBoxID, "consecutive_misses", n)
 	if n < missingPollThreshold {
 		log.Warn("active job missing from torbox list")
-		return
+		return false
 	}
 	j.State = job.StateFailed
 	j.FailMessage = fmt.Sprintf(
 		"download no longer present on TorBox (absent from list for %d polls)", n)
 	if err := w.store.UpdateJob(ctx, j); err != nil {
 		log.Error("persisting failed state for missing job", "error", err)
-		return
+		return false
 	}
 	delete(w.missingPolls, j.TorBoxID)
 	log.Warn("job failed: vanished from torbox")
+	return true
 }
 
-// reconcile applies one TorBox record to its job and persists any change.
-func (w *Workers) reconcile(ctx context.Context, j *job.Job, rec torbox.UsenetDownload) {
+// reconcile applies one TorBox record to its job, persists any change, and
+// classifies the outcome.
+func (w *Workers) reconcile(ctx context.Context, j *job.Job, rec torbox.UsenetDownload) reconcileResult {
 	log := w.logger.With("job_id", j.ID, "torbox_id", j.TorBoxID)
 
 	if rec.Failed() {
@@ -95,7 +122,7 @@ func (w *Workers) reconcile(ctx context.Context, j *job.Job, rec torbox.UsenetDo
 			log.Error("persisting failed state", "error", err)
 		}
 		log.Warn("job failed on torbox", "download_state", rec.DownloadState)
-		return
+		return reconcileSettled
 	}
 
 	j.TotalBytes = rec.Size
@@ -111,7 +138,7 @@ func (w *Workers) reconcile(ctx context.Context, j *job.Job, rec torbox.UsenetDo
 			if uerr := w.store.UpdateJob(ctx, j); uerr != nil {
 				log.Error("persisting progress", "error", uerr)
 			}
-			return
+			return reconcileAwaitingWebDAV
 		}
 		now := time.Now()
 		j.State = job.StateCompleted
@@ -121,10 +148,10 @@ func (w *Workers) reconcile(ctx context.Context, j *job.Job, rec torbox.UsenetDo
 		j.CompletedAt = &now
 		if err := w.store.UpdateJob(ctx, j); err != nil {
 			log.Error("persisting completed state", "error", err)
-			return
+			return reconcileSettled
 		}
 		log.Info("job completed", "storage_path", path)
-		return
+		return reconcileSettled
 	}
 
 	if j.State == job.StateQueued {
@@ -133,6 +160,7 @@ func (w *Workers) reconcile(ctx context.Context, j *job.Job, rec torbox.UsenetDo
 	if err := w.store.UpdateJob(ctx, j); err != nil {
 		log.Error("persisting progress", "error", err)
 	}
+	return reconcileOngoing
 }
 
 // pathRetryInterval and pathRetryTimeout govern WebDAV listing-lag tolerance.
@@ -142,8 +170,9 @@ var (
 )
 
 // resolveStoragePath returns the verified host path for a completed download.
-// TorBox flags completion a few seconds before the WebDAV listing updates, so
-// it polls the filesystem for the expected directory.
+// TorBox creates one folder per release directly under the configured Usenet
+// path, named exactly as the download (rec.Name). It polls the filesystem
+// because the WebDAV listing can lag TorBox's completion flag.
 func (w *Workers) resolveStoragePath(ctx context.Context, name string) (string, error) {
 	expected := filepath.Join(w.cfg.UsenetPath(), name)
 	deadline := time.Now().Add(pathRetryTimeout)
