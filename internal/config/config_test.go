@@ -117,3 +117,45 @@ func TestValidateMountMissing(t *testing.T) {
 		t.Fatal("expected error for missing mount root")
 	}
 }
+
+func TestHealConfigDefaults(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SAB2TORBOX_TORBOX_API_TOKEN", "t")
+	t.Setenv("SAB2TORBOX_SAB_API_KEY", "k")
+	t.Setenv("SAB2TORBOX_WEBDAV_MOUNT_ROOT", dir)
+	t.Setenv("SAB2TORBOX_SYMLINK_ROOT", dir)
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.HealEnabled {
+		t.Error("HealEnabled must default to false")
+	}
+	if c.HealInterval != time.Hour {
+		t.Errorf("HealInterval default: %v", c.HealInterval)
+	}
+	if c.HealMaxAttempts != 3 {
+		t.Errorf("HealMaxAttempts default: %d", c.HealMaxAttempts)
+	}
+	if c.HealBackoffInitial != 5*time.Minute {
+		t.Errorf("HealBackoffInitial default: %v", c.HealBackoffInitial)
+	}
+}
+
+func TestHealRequiresLibraryRootsWhenEnabled(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SAB2TORBOX_TORBOX_API_TOKEN", "t")
+	t.Setenv("SAB2TORBOX_SAB_API_KEY", "k")
+	t.Setenv("SAB2TORBOX_WEBDAV_MOUNT_ROOT", dir)
+	t.Setenv("SAB2TORBOX_SYMLINK_ROOT", dir)
+	t.Setenv("SAB2TORBOX_HEAL_ENABLED", "true")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error: HEAL_ENABLED without HEAL_LIBRARY_ROOTS")
+	}
+	t.Setenv("SAB2TORBOX_HEAL_LIBRARY_ROOTS", dir)
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load with valid heal config: %v", err)
+	}
+}

@@ -31,6 +31,13 @@ type Config struct {
 	TorBoxWebDAVPass       string        `envconfig:"TORBOX_WEBDAV_PASS"`
 	TorBoxWebDAVRefreshURL string        `envconfig:"TORBOX_WEBDAV_REFRESH_URL" default:"https://webdav.torbox.app/refresh"`
 	WebDAVRefreshCooldown  time.Duration `envconfig:"TORBOX_WEBDAV_REFRESH_COOLDOWN" default:"2m"`
+
+	HealEnabled        bool          `envconfig:"HEAL_ENABLED" default:"false"`
+	HealInterval       time.Duration `envconfig:"HEAL_INTERVAL" default:"1h"`
+	HealLibraryRoots   []string      `envconfig:"HEAL_LIBRARY_ROOTS"`
+	HealDryRun         bool          `envconfig:"HEAL_DRY_RUN" default:"false"`
+	HealMaxAttempts    int           `envconfig:"HEAL_MAX_ATTEMPTS" default:"3"`
+	HealBackoffInitial time.Duration `envconfig:"HEAL_BACKOFF_INITIAL" default:"5m"`
 }
 
 // Load reads configuration from the environment and validates it.
@@ -48,6 +55,20 @@ func Load() (*Config, error) {
 	}
 	if !symInfo.IsDir() {
 		return nil, fmt.Errorf("symlink root %q is not a directory", c.SymlinkRoot)
+	}
+	if c.HealEnabled {
+		if len(c.HealLibraryRoots) == 0 {
+			return nil, fmt.Errorf("HEAL_ENABLED requires HEAL_LIBRARY_ROOTS")
+		}
+		for _, root := range c.HealLibraryRoots {
+			info, err := os.Stat(root)
+			if err != nil {
+				return nil, fmt.Errorf("heal library root %q: %w", root, err)
+			}
+			if !info.IsDir() {
+				return nil, fmt.Errorf("heal library root %q is not a directory", root)
+			}
+		}
 	}
 	return &c, nil
 }
