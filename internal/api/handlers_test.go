@@ -211,7 +211,8 @@ func TestAddURLCreatesAndIsIdempotent(t *testing.T) {
 		}
 		return resp.NzoIDs[0]
 	}
-	if get() != get() {
+	first, second := get(), get()
+	if first != second {
 		t.Error("addurl not idempotent")
 	}
 	jobs, _ := st.JobsByState(context.Background(), job.StatePending)

@@ -151,7 +151,7 @@ func (s *Server) handleAddFile(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, ErrorResponse{Status: false, Error: "missing nzb file"})
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	content, err := io.ReadAll(io.LimitReader(file, maxNZBSize))
 	if err != nil {
 		s.writeJSON(w, ErrorResponse{Status: false, Error: "reading nzb file"})

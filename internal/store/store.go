@@ -35,11 +35,11 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1) // SQLite single-writer; avoids SQLITE_BUSY churn
 	if err := db.PingContext(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("pinging sqlite: %w", err)
 	}
 	if err := migrate(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return &Store{db: db}, nil
@@ -168,7 +168,7 @@ func (s *Store) JobsByState(ctx context.Context, states ...job.State) ([]*job.Jo
 	if err != nil {
 		return nil, fmt.Errorf("querying jobs by state: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []*job.Job
 	for rows.Next() {
 		j, err := scanJob(rows)

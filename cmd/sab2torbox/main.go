@@ -47,7 +47,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	tb := torbox.New(cfg.TorBoxAPIToken)
 	workers := worker.New(st, tb, cfg, logger)
@@ -107,7 +107,7 @@ func runHealthcheck() int {
 		fmt.Fprintln(os.Stderr, "healthcheck:", err)
 		return 1
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		fmt.Fprintln(os.Stderr, "healthcheck: status", resp.StatusCode)
 		return 1
