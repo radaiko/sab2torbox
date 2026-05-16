@@ -367,6 +367,11 @@ func (s *Server) handleHealRetry(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if j.State != job.StateHealFailed {
+		s.writeJSON(w, ErrorResponse{Status: false,
+			Error: "job is not in heal_failed state"})
+		return
+	}
 	j.HealCount = 0
 	j.LastHealedAt = nil
 	j.LastHealError = ""
@@ -384,6 +389,11 @@ func (s *Server) handleHealRetry(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHealGiveUp(w http.ResponseWriter, r *http.Request) {
 	j, ok := s.healJobFromURL(w, r)
 	if !ok {
+		return
+	}
+	if j.State != job.StateHealFailed {
+		s.writeJSON(w, ErrorResponse{Status: false,
+			Error: "job is not in heal_failed state"})
 		return
 	}
 	ctx := r.Context()

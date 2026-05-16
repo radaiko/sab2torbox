@@ -414,5 +414,39 @@ func TestHealGiveUpEndpoint(t *testing.T) {
 	}
 }
 
+func TestHealRetryRejectsNonHealFailedJob(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateImported, Category: "c", NZBName: "n"})
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPost,
+		"/health/heal/"+itoaTest(id)+"/retry", nil))
+	var resp ErrorResponse
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Status {
+		t.Error("retry must reject a job that is not in heal_failed state")
+	}
+	if got, _ := st.GetJob(ctx, id); got.State != job.StateImported {
+		t.Errorf("the job state must be unchanged, got %s", got.State)
+	}
+}
+
+func TestHealGiveUpRejectsNonHealFailedJob(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateHealing, Category: "c", NZBName: "n"})
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPost,
+		"/health/heal/"+itoaTest(id)+"/give_up", nil))
+	var resp ErrorResponse
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Status {
+		t.Error("give_up must reject a job that is not in heal_failed state")
+	}
+	if got, _ := st.GetJob(ctx, id); got.State != job.StateHealing {
+		t.Errorf("the job state must be unchanged, got %s", got.State)
+	}
+}
+
 // itoaTest renders an int64 for building test URLs.
 func itoaTest(n int64) string { return strconv.FormatInt(n, 10) }
