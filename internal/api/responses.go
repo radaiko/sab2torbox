@@ -99,6 +99,16 @@ type DeleteResponse struct {
 	Status bool `json:"status"`
 }
 
+// SymlinkHealthResponse answers GET /health/symlinks.
+type SymlinkHealthResponse struct {
+	Tracked    int64  `json:"tracked"`
+	Broken     int64  `json:"broken"`
+	Healing    int64  `json:"healing"`
+	HealFailed int64  `json:"heal_failed"`
+	LastRun    string `json:"last_run"`
+	NextRun    string `json:"next_run"`
+}
+
 // queueStatusLabel maps a job state to the SAB queue status string.
 func queueStatusLabel(s job.State) string {
 	switch s {

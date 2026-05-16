@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/radaiko/sab2torbox/internal/config"
@@ -25,12 +26,18 @@ type Checker interface {
 	Check(ctx context.Context) error
 }
 
+// HealReporter exposes the healer's schedule for the /health/symlinks endpoint.
+type HealReporter interface {
+	HealRunInfo() (last, next time.Time)
+}
+
 // Server holds dependencies for the SABnzbd-compatible HTTP API.
 type Server struct {
-	store  *store.Store
-	cfg    *config.Config
-	logger *slog.Logger
-	health Checker
+	store        *store.Store
+	cfg          *config.Config
+	logger       *slog.Logger
+	health       Checker
+	healReporter HealReporter
 }
 
 // NewServer constructs a Server.
@@ -41,10 +48,14 @@ func NewServer(st *store.Store, cfg *config.Config, logger *slog.Logger) *Server
 // SetHealth attaches a health checker for the /healthz endpoint.
 func (s *Server) SetHealth(c Checker) { s.health = c }
 
+// SetHealReporter attaches the healer's status source for /health/symlinks.
+func (s *Server) SetHealReporter(r HealReporter) { s.healReporter = r }
+
 // Router builds the chi router with all routes.
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/healthz", s.handleHealthz)
+	r.Get("/health/symlinks", s.handleHealthSymlinks)
 	for _, base := range []string{"/api", "/sabnzbd/api"} {
 		r.Get(base, s.handleAPI)
 		r.Post(base, s.handleAPI)
@@ -277,6 +288,33 @@ func parseNzoID(nzo string) (int64, bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+// handleHealthSymlinks answers GET /health/symlinks with heal/symlink counts.
+func (s *Server) handleHealthSymlinks(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var resp SymlinkHealthResponse
+	tracked, broken, err := s.store.SymlinkCounts(ctx)
+	if err != nil {
+		s.logger.Error("counting symlinks", "error", err)
+	}
+	resp.Tracked, resp.Broken = tracked, broken
+	if n, err := s.store.CountJobsByState(ctx, job.StateHealing); err == nil {
+		resp.Healing = n
+	}
+	if n, err := s.store.CountJobsByState(ctx, job.StateHealFailed); err == nil {
+		resp.HealFailed = n
+	}
+	if s.healReporter != nil {
+		last, next := s.healReporter.HealRunInfo()
+		if !last.IsZero() {
+			resp.LastRun = last.UTC().Format(time.RFC3339)
+		}
+		if !next.IsZero() {
+			resp.NextRun = next.UTC().Format(time.RFC3339)
+		}
+	}
+	s.writeJSON(w, resp)
 }
 
 // handleHealthz answers the /healthz probe.
