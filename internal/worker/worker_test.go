@@ -742,3 +742,71 @@ func TestHealerSkipsExhaustedJobs(t *testing.T) {
 		t.Error("a job at HealMaxAttempts must not be resubmitted")
 	}
 }
+
+func TestHealReconcileFinishesHeal(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, cfg := testWorkers(t, fake)
+	shortPathRetry(t)
+	ctx := context.Background()
+
+	// New release folder on the WebDAV mount (under the usenet subpath).
+	newRel := "Rel.Healed"
+	newDir := filepath.Join(cfg.UsenetPath(), newRel)
+	os.MkdirAll(newDir, 0o755)
+	os.WriteFile(filepath.Join(newDir, "ep.mkv"), []byte("v"), 0o644)
+
+	// A job in `healing` with a broken library symlink.
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateHealing, Category: "sonarr", NZBName: newRel})
+	j, _ := st.GetJob(ctx, id)
+	j.TorBoxID = 700
+	j.StoragePath = filepath.Join(cfg.SymlinkRoot, "sonarr", "Rel.Old")
+	st.UpdateJob(ctx, j)
+
+	lib := t.TempDir()
+	link := filepath.Join(lib, "ep.mkv")
+	os.Symlink(filepath.Join(cfg.UsenetPath(), "Rel.Old", "ep.mkv"), link)
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{
+		JobID: id, SymlinkPath: link,
+		TargetPath: filepath.Join(cfg.UsenetPath(), "Rel.Old", "ep.mkv"),
+	})
+	syms, _ := st.ListImportedSymlinks(ctx)
+	st.SetSymlinkVerified(ctx, syms[0].ID, true, time.Now())
+
+	fake.list = []torbox.UsenetDownload{{
+		ID: 700, Name: newRel, Progress: 1,
+		DownloadFinished: true, DownloadPresent: true,
+	}}
+	if err := w.healReconcileOnce(ctx); err != nil {
+		t.Fatalf("healReconcileOnce: %v", err)
+	}
+	got, _ := st.GetJob(ctx, id)
+	if got.State != job.StateImported {
+		t.Fatalf("state: got %s want imported", got.State)
+	}
+	if got.HealCount != 1 {
+		t.Errorf("heal_count: got %d want 1", got.HealCount)
+	}
+	target, _ := os.Readlink(link)
+	want := filepath.Join(newDir, "ep.mkv")
+	if target != want {
+		t.Errorf("symlink not repointed: got %q want %q", target, want)
+	}
+}
+
+func TestHealReconcileMarksFailedDownload(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, _ := testWorkers(t, fake)
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateHealing, Category: "c", NZBName: "n"})
+	j, _ := st.GetJob(ctx, id)
+	j.TorBoxID = 701
+	st.UpdateJob(ctx, j)
+	fake.list = []torbox.UsenetDownload{{ID: 701, DownloadState: "failed (dead)"}}
+	if err := w.healReconcileOnce(ctx); err != nil {
+		t.Fatalf("healReconcileOnce: %v", err)
+	}
+	got, _ := st.GetJob(ctx, id)
+	if got.State != job.StateHealFailed {
+		t.Errorf("state: got %s want heal_failed", got.State)
+	}
+}

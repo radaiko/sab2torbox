@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,7 +13,102 @@ import (
 	"github.com/radaiko/sab2torbox/internal/torbox"
 )
 
-func (w *Workers) healReconcileOnce(_ context.Context) error { return nil }
+// healReconcileOnce finishes every job in `healing`: once its resubmitted
+// download is present on the WebDAV mount, it repoints the broken symlinks
+// and returns the job to `imported`. It makes no TorBox call when nothing is
+// healing.
+func (w *Workers) healReconcileOnce(ctx context.Context) error {
+	jobs, err := w.store.JobsByState(ctx, job.StateHealing)
+	if err != nil {
+		return err
+	}
+	if len(jobs) == 0 {
+		return nil
+	}
+	list, err := w.tb.ListUsenet(ctx)
+	if err != nil {
+		return fmt.Errorf("heal: listing torbox usenet: %w", err)
+	}
+	byID := make(map[int64]torbox.UsenetDownload, len(list))
+	for _, d := range list {
+		byID[int64(d.ID)] = d
+	}
+	for _, j := range jobs {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		rec, ok := byID[j.TorBoxID]
+		if !ok {
+			continue // the resubmitted download is not listed yet
+		}
+		if rec.Failed() {
+			w.logger.Warn("heal: torbox download failed",
+				"job_id", j.ID, "download_state", rec.DownloadState)
+			w.markHealFailed(ctx, j, "TorBox state: "+rec.DownloadState)
+			continue
+		}
+		if !rec.DownloadFinished || !rec.DownloadPresent {
+			continue // still downloading
+		}
+		w.finishHeal(ctx, j, rec)
+	}
+	return nil
+}
+
+// finishHeal repoints every broken symlink of a job to its new release, then
+// returns the job to `imported`.
+func (w *Workers) finishHeal(ctx context.Context, j *job.Job, rec torbox.UsenetDownload) {
+	log := w.logger.With("job_id", j.ID, "torbox_id", j.TorBoxID)
+	newReleaseDir, err := w.resolveStoragePath(ctx, rec.Name)
+	if err != nil {
+		log.Debug("heal: waiting for webdav path", "error", err)
+		return // retry next tick
+	}
+	syms, err := w.store.ListImportedSymlinks(ctx)
+	if err != nil {
+		log.Error("heal: loading symlinks", "error", err)
+		return
+	}
+	healed := 0
+	for _, sym := range syms {
+		if sym.JobID != j.ID || !sym.IsBroken {
+			continue
+		}
+		base := filepath.Base(sym.TargetPath)
+		newTarget := filepath.Join(newReleaseDir, base)
+		if _, err := os.Stat(newTarget); err != nil {
+			match, merr := findBestMatch(newReleaseDir, base)
+			if merr != nil {
+				log.Warn("heal: no match, leaving symlink broken",
+					"symlink", sym.SymlinkPath, "error", merr)
+				continue
+			}
+			newTarget = match
+		}
+		if err := atomicReplaceSymlink(sym.SymlinkPath, newTarget); err != nil {
+			log.Warn("heal: replacing symlink", "symlink", sym.SymlinkPath, "error", err)
+			continue
+		}
+		if err := w.store.UpdateSymlinkTarget(ctx, sym.ID, newTarget); err != nil {
+			w.logger.Warn("heal: updating symlink row", "id", sym.ID, "error", err)
+		}
+		healed++
+	}
+	now := timeNow()
+	j.State = job.StateImported
+	// Keep storage_path in symlink-farm form so discovery still matches it
+	// by release name and the deleter's guarded cleanup stays correct.
+	j.StoragePath = filepath.Join(w.cfg.SymlinkRoot, j.Category, rec.Name)
+	j.ProgressPct = 100
+	j.HealCount++
+	j.LastHealedAt = &now
+	j.LastHealError = ""
+	if err := w.store.UpdateJob(ctx, j); err != nil {
+		log.Error("heal: persisting healed job", "error", err)
+		return
+	}
+	log.Info("heal: completed", "symlinks_healed", healed)
+}
 
 // healOnce runs the periodic heal cycle: discover library symlinks, detect
 // broken ones, and trigger heals for affected jobs.
