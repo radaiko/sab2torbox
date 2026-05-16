@@ -15,7 +15,7 @@ services:
       # Sonarr/Radarr/Plex containers too).
       - SAB2TORBOX_SYMLINK_ROOT=/mnt/smedia/_incoming
       - SAB2TORBOX_DATABASE_PATH=/config/sab2torbox.db
-      - SAB2TORBOX_POLL_INTERVAL=10s
+      - SAB2TORBOX_POLL_INTERVAL=1m
       - SAB2TORBOX_LOG_LEVEL=info
       - SAB2TORBOX_CATEGORIES=sonarr,radarr,sonarr-anime
       # Optional: auto-force TorBox's WebDAV refresh on completion. Set both
@@ -44,6 +44,6 @@ services:
           propagation: rslave
     healthcheck:
       test: ["CMD", "/sab2torbox", "healthcheck"]
-      interval: 30s
+      interval: 60s
       timeout: 5s
       retries: 3

@@ -170,7 +170,7 @@ All configuration is via `SAB2TORBOX_*` environment variables.
 | `SAB2TORBOX_SYMLINK_ROOT` | yes | — | Root of the symlink farm; must share a filesystem with the media library |
 | `SAB2TORBOX_LISTEN_ADDR` | no | `:8080` | HTTP bind address |
 | `SAB2TORBOX_DATABASE_PATH` | no | `/config/sab2torbox.db` | SQLite database path |
-| `SAB2TORBOX_POLL_INTERVAL` | no | `10s` | How often to poll TorBox for in-flight jobs |
+| `SAB2TORBOX_POLL_INTERVAL` | no | `1m` | How often to poll TorBox for in-flight jobs |
 | `SAB2TORBOX_LOG_LEVEL` | no | `info` | `debug`, `info`, `warn`, `error` |
 | `SAB2TORBOX_CATEGORIES` | no | `sonarr,radarr,sonarr-anime` | Comma-separated allowed categories |
 | `SAB2TORBOX_TORBOX_WEBDAV_USER` | no | — | TorBox WebDAV username — set with `_PASS` to enable the WebDAV refresh |

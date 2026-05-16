@@ -20,7 +20,7 @@ func TestLoadDefaults(t *testing.T) {
 	if c.ListenAddr != ":8080" {
 		t.Errorf("ListenAddr default: %q", c.ListenAddr)
 	}
-	if c.PollInterval != 10*time.Second {
+	if c.PollInterval != time.Minute {
 		t.Errorf("PollInterval default: %v", c.PollInterval)
 	}
 	if c.UsenetPath() != dir {

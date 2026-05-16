@@ -95,7 +95,8 @@ func (w *Workers) handleMissing(ctx context.Context, j *job.Job) bool {
 	n := w.missingPolls[j.TorBoxID]
 	log := w.logger.With("job_id", j.ID, "torbox_id", j.TorBoxID, "consecutive_misses", n)
 	if n < missingPollThreshold {
-		log.Warn("active job missing from torbox list")
+		// Routine until the threshold escalates it to a failure below.
+		log.Debug("active job missing from torbox list")
 		return false
 	}
 	j.State = job.StateFailed
@@ -133,7 +134,8 @@ func (w *Workers) reconcile(ctx context.Context, j *job.Job, rec torbox.UsenetDo
 	if rec.DownloadFinished && rec.DownloadPresent {
 		sourceDir, err := w.resolveStoragePath(ctx, rec.Name)
 		if err != nil {
-			log.Warn("waiting for webdav path", "error", err)
+			// Routine while TorBox's WebDAV catches up — not actionable.
+			log.Debug("waiting for webdav path", "error", err)
 			// Keep progress; retry on the next poll.
 			if uerr := w.store.UpdateJob(ctx, j); uerr != nil {
 				log.Error("persisting progress", "error", uerr)

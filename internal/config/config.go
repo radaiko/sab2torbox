@@ -20,7 +20,7 @@ type Config struct {
 	SymlinkRoot         string        `envconfig:"SYMLINK_ROOT" required:"true"`
 	ListenAddr          string        `envconfig:"LISTEN_ADDR" default:":8080"`
 	DatabasePath        string        `envconfig:"DATABASE_PATH" default:"/config/sab2torbox.db"`
-	PollInterval        time.Duration `envconfig:"POLL_INTERVAL" default:"10s"`
+	PollInterval        time.Duration `envconfig:"POLL_INTERVAL" default:"1m"`
 	LogLevel            string        `envconfig:"LOG_LEVEL" default:"info"`
 	Categories          []string      `envconfig:"CATEGORIES" default:"sonarr,radarr,sonarr-anime"`
 
