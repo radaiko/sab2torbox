@@ -19,6 +19,9 @@ func (w *Workers) healOnce(ctx context.Context) error {
 	if err := w.discoverSymlinks(ctx); err != nil {
 		w.logger.Error("heal: discovering symlinks", "error", err)
 	}
+	if err := w.detectBrokenSymlinks(ctx); err != nil {
+		w.logger.Error("heal: detecting broken symlinks", "error", err)
+	}
 	return nil
 }
 
@@ -68,6 +71,41 @@ func (w *Workers) discoverSymlinks(ctx context.Context) error {
 		})
 		if walkErr != nil {
 			w.logger.Warn("heal: walking library root", "root", root, "error", walkErr)
+		}
+	}
+	return nil
+}
+
+// detectBrokenSymlinks verifies every tracked symlink. A symlink whose own
+// path is gone (Sonarr renamed/moved it) is dropped — the next discovery
+// re-records its new location. A symlink whose target is gone is flagged
+// broken for the heal pass.
+func (w *Workers) detectBrokenSymlinks(ctx context.Context) error {
+	syms, err := w.store.ListImportedSymlinks(ctx)
+	if err != nil {
+		return err
+	}
+	now := timeNow()
+	for _, sym := range syms {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if _, err := os.Lstat(sym.SymlinkPath); err != nil {
+			if derr := w.store.DeleteImportedSymlink(ctx, sym.ID); derr != nil {
+				w.logger.Warn("heal: removing stale symlink row", "id", sym.ID, "error", derr)
+			}
+			continue
+		}
+		broken := false
+		if _, err := os.Stat(sym.SymlinkPath); err != nil {
+			broken = true // Lstat ok but Stat fails -> the target is gone
+		}
+		if err := w.store.SetSymlinkVerified(ctx, sym.ID, broken, now); err != nil {
+			w.logger.Warn("heal: updating symlink state", "id", sym.ID, "error", err)
+		}
+		if broken {
+			w.logger.Warn("heal: broken symlink",
+				"path", sym.SymlinkPath, "target", sym.TargetPath)
 		}
 	}
 	return nil

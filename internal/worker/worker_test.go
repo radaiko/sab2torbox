@@ -607,6 +607,47 @@ func TestHealRunInfoZeroBeforeFirstRun(t *testing.T) {
 	}
 }
 
+func TestHealerDetectsBrokenSymlinks(t *testing.T) {
+	w, st, _ := testWorkers(t, &fakeTorBox{})
+	ctx := context.Background()
+	jobID, _ := st.CreateJob(ctx, &job.Job{State: job.StateImported, Category: "c", NZBName: "n"})
+
+	// A live symlink and a broken one.
+	src := t.TempDir()
+	good := filepath.Join(src, "good.mkv")
+	os.WriteFile(good, []byte("x"), 0o644)
+	lib := t.TempDir()
+	liveLink := filepath.Join(lib, "live.mkv")
+	os.Symlink(good, liveLink)
+	brokenLink := filepath.Join(lib, "broken.mkv")
+	os.Symlink(filepath.Join(src, "gone.mkv"), brokenLink)
+	goneLink := filepath.Join(lib, "gone-entirely.mkv")
+	os.Symlink(good, goneLink)
+
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{JobID: jobID, SymlinkPath: liveLink, TargetPath: good})
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{JobID: jobID, SymlinkPath: brokenLink, TargetPath: filepath.Join(src, "gone.mkv")})
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{JobID: jobID, SymlinkPath: goneLink, TargetPath: good})
+	os.Remove(goneLink) // the symlink itself disappears
+
+	if err := w.detectBrokenSymlinks(ctx); err != nil {
+		t.Fatalf("detectBrokenSymlinks: %v", err)
+	}
+	syms, _ := st.ListImportedSymlinks(ctx)
+	got := map[string]bool{}
+	for _, s := range syms {
+		got[filepath.Base(s.SymlinkPath)] = s.IsBroken
+	}
+	if len(syms) != 2 {
+		t.Fatalf("the vanished symlink row should be deleted; got %d rows", len(syms))
+	}
+	if got["live.mkv"] {
+		t.Error("live symlink wrongly marked broken")
+	}
+	if !got["broken.mkv"] {
+		t.Error("broken symlink not marked broken")
+	}
+}
+
 func TestHealerDiscoversLibrarySymlinks(t *testing.T) {
 	w, st, cfg := testWorkers(t, &fakeTorBox{})
 	libRoot := t.TempDir()
