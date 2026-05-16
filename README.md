@@ -233,6 +233,8 @@ the comma-separated Sonarr/Radarr library roots (e.g.
 | `SAB2TORBOX_HEAL_DRY_RUN` | `false` | Detect and log broken symlinks but never modify anything |
 | `SAB2TORBOX_HEAL_MAX_ATTEMPTS` | `3` | Give up healing a job after this many consecutive failures |
 | `SAB2TORBOX_HEAL_BACKOFF_INITIAL` | `5m` | Exponential backoff base between failed heal attempts |
+| `SAB2TORBOX_HEAL_WEBHOOK_URL` | _(empty)_ | URL that receives a JSON POST on heal events; empty disables the webhook. |
+| `SAB2TORBOX_HEAL_WEBHOOK_EVENTS` | `failed` | Comma-separated subset of `detected,healing,healed,failed` to notify on. |
 
 ### Storage cost of keeping NZB content
 
@@ -241,20 +243,16 @@ lifetime — it is needed to resubmit to TorBox. NZBs are typically tens of
 kilobytes; 10,000 jobs add up to roughly 30 MB of database storage, which is
 negligible.
 
-### Monitoring
+### Monitoring and manual control
 
-`GET /health/symlinks` returns a JSON object with the current healer state:
+Four HTTP endpoints let you observe and steer the healer without restarting the service:
 
-```json
-{
-  "tracked":    42,
-  "broken":      1,
-  "healing":     1,
-  "heal_failed": 0,
-  "last_run":  "2026-05-16T03:00:00Z",
-  "next_run":  "2026-05-16T04:00:00Z"
-}
-```
+- **`GET /health/symlinks`** — JSON object with counts: `tracked`, `broken`, `healing`, `heal_failed`, plus `last_run` and `next_run` timestamps. A quick way to see the overall heal state.
+- **`GET /health/heal_failed`** — JSON array of jobs the healer has given up on (their `heal_count` has reached `HEAL_MAX_ATTEMPTS`). Each entry contains `job_id`, `name`, `broken_symlinks`, `last_heal_error`, `heal_count`, and `last_healed_at`.
+- **`POST /health/heal/{job_id}/retry`** — resets that job's `heal_count` to zero so the healer retries it on its next tick. Use this after confirming the NZB should be resolvable again (e.g. TorBox found the content on a different server).
+- **`POST /health/heal/{job_id}/give_up`** — marks the job `manually_resolved` and stops tracking its symlinks; the healer ignores it from that point on. Use when you have re-acquired the release through Sonarr and no longer want sab2torbox to attempt a heal.
+
+**Webhook notifications.** When `SAB2TORBOX_HEAL_WEBHOOK_URL` is set, sab2torbox POSTs a `Content-Type: application/json` body to that URL on each configured heal event. The JSON body always contains `event` (one of `detected`, `healing`, `healed`, `failed`), `timestamp` (RFC 3339), and a `job` object with `id`, `name`, `category`, and `heal_count`. Depending on the event, the body may also include `symlinks_healed` (count of atomically repointed symlinks), `new_torbox_id` (the TorBox download ID after the heal), and `error` (the failure message on a `failed` event). Delivery is **best-effort** — failures are logged but never retried. The webhook is **unauthenticated**; if you need auth, put a reverse proxy in front of the receiving endpoint.
 
 ## Troubleshooting
 

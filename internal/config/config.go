@@ -38,6 +38,8 @@ type Config struct {
 	HealDryRun         bool          `envconfig:"HEAL_DRY_RUN" default:"false"`
 	HealMaxAttempts    int           `envconfig:"HEAL_MAX_ATTEMPTS" default:"3"`
 	HealBackoffInitial time.Duration `envconfig:"HEAL_BACKOFF_INITIAL" default:"5m"`
+	HealWebhookURL     string        `envconfig:"HEAL_WEBHOOK_URL"`
+	HealWebhookEvents  []string      `envconfig:"HEAL_WEBHOOK_EVENTS" default:"failed"`
 }
 
 // Load reads configuration from the environment and validates it.
@@ -68,6 +70,9 @@ func Load() (*Config, error) {
 			if !info.IsDir() {
 				return nil, fmt.Errorf("heal library root %q is not a directory", root)
 			}
+		}
+		if c.HealMaxAttempts <= 0 {
+			return nil, fmt.Errorf("HEAL_MAX_ATTEMPTS must be greater than 0")
 		}
 	}
 	return &c, nil

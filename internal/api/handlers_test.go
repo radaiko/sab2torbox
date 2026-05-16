@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -325,3 +326,127 @@ func TestHealthSymlinks(t *testing.T) {
 		t.Errorf("counts wrong: %+v", resp)
 	}
 }
+
+func TestHealFailedEndpoint(t *testing.T) {
+	srv, st := testServer(t)
+	srv.cfg.HealMaxAttempts = 3
+	ctx := context.Background()
+
+	// An exhausted job (heal_count >= max) — should be listed.
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateHealFailed, Category: "sonarr", NZBName: "Dead"})
+	j, _ := st.GetJob(ctx, id)
+	j.HealCount = 3
+	j.LastHealError = "nzb gone"
+	st.UpdateJob(ctx, j)
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{
+		JobID: id, SymlinkPath: "/lib/dead.mkv", TargetPath: "/mnt/torbox/Dead/dead.mkv",
+	})
+	syms, _ := st.ListImportedSymlinks(ctx)
+	st.SetSymlinkVerified(ctx, syms[0].ID, true, time.Now())
+
+	// A heal_failed job still under the limit — should NOT be listed.
+	id2, _ := st.CreateJob(ctx, &job.Job{State: job.StateHealFailed, Category: "c", NZBName: "Retrying"})
+	j2, _ := st.GetJob(ctx, id2)
+	j2.HealCount = 1
+	st.UpdateJob(ctx, j2)
+
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/heal_failed", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	var items []HealFailedItem
+	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	if len(items) != 1 || items[0].JobID != id {
+		t.Fatalf("expected only the exhausted job, got %+v", items)
+	}
+	if items[0].HealCount != 3 || items[0].LastHealError != "nzb gone" ||
+		len(items[0].BrokenSymlinks) != 1 {
+		t.Errorf("bad item: %+v", items[0])
+	}
+}
+
+func TestHealRetryEndpoint(t *testing.T) {
+	srv, st := testServer(t)
+	srv.cfg.HealMaxAttempts = 3
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateHealFailed, Category: "c", NZBName: "n"})
+	j, _ := st.GetJob(ctx, id)
+	j.HealCount = 3
+	j.LastHealError = "boom"
+	st.UpdateJob(ctx, j)
+
+	rec := httptest.NewRecorder()
+	u := "/health/heal/" + itoaTest(id) + "/retry"
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, u, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	got, _ := st.GetJob(ctx, id)
+	if got.HealCount != 0 || got.LastHealError != "" {
+		t.Errorf("retry must reset heal_count and clear the error: %+v", got)
+	}
+}
+
+func TestHealGiveUpEndpoint(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateHealFailed, Category: "c", NZBName: "n"})
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{
+		JobID: id, SymlinkPath: "/lib/x.mkv", TargetPath: "/mnt/torbox/N/x.mkv",
+	})
+
+	rec := httptest.NewRecorder()
+	u := "/health/heal/" + itoaTest(id) + "/give_up"
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, u, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	got, _ := st.GetJob(ctx, id)
+	if got.State != job.StateManuallyResolved {
+		t.Errorf("give_up must set manually_resolved, got %s", got.State)
+	}
+	syms, _ := st.ListImportedSymlinks(ctx)
+	if len(syms) != 0 {
+		t.Errorf("give_up must drop the job's tracked symlinks, got %d", len(syms))
+	}
+}
+
+func TestHealRetryRejectsNonHealFailedJob(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateImported, Category: "c", NZBName: "n"})
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPost,
+		"/health/heal/"+itoaTest(id)+"/retry", nil))
+	var resp ErrorResponse
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Status {
+		t.Error("retry must reject a job that is not in heal_failed state")
+	}
+	if got, _ := st.GetJob(ctx, id); got.State != job.StateImported {
+		t.Errorf("the job state must be unchanged, got %s", got.State)
+	}
+}
+
+func TestHealGiveUpRejectsNonHealFailedJob(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateHealing, Category: "c", NZBName: "n"})
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPost,
+		"/health/heal/"+itoaTest(id)+"/give_up", nil))
+	var resp ErrorResponse
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Status {
+		t.Error("give_up must reject a job that is not in heal_failed state")
+	}
+	if got, _ := st.GetJob(ctx, id); got.State != job.StateHealing {
+		t.Errorf("the job state must be unchanged, got %s", got.State)
+	}
+}
+
+// itoaTest renders an int64 for building test URLs.
+func itoaTest(n int64) string { return strconv.FormatInt(n, 10) }

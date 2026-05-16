@@ -56,6 +56,9 @@ func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/health/symlinks", s.handleHealthSymlinks)
+	r.Get("/health/heal_failed", s.handleHealFailed)
+	r.Post("/health/heal/{jobID}/retry", s.handleHealRetry)
+	r.Post("/health/heal/{jobID}/give_up", s.handleHealGiveUp)
 	for _, base := range []string{"/api", "/sabnzbd/api"} {
 		r.Get(base, s.handleAPI)
 		r.Post(base, s.handleAPI)
@@ -315,6 +318,112 @@ func (s *Server) handleHealthSymlinks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.writeJSON(w, resp)
+}
+
+// handleHealFailed lists jobs the healer has given up on (heal_count has
+// reached HEAL_MAX_ATTEMPTS), with their broken symlinks.
+func (s *Server) handleHealFailed(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	jobs, err := s.store.JobsByState(ctx, job.StateHealFailed)
+	if err != nil {
+		s.logger.Error("loading heal_failed jobs", "error", err)
+	}
+	syms, err := s.store.ListImportedSymlinks(ctx)
+	if err != nil {
+		s.logger.Error("loading symlinks for heal_failed", "error", err)
+	}
+	brokenByJob := make(map[int64][]string)
+	for _, sym := range syms {
+		if sym.IsBroken {
+			brokenByJob[sym.JobID] = append(brokenByJob[sym.JobID], sym.SymlinkPath)
+		}
+	}
+	items := make([]HealFailedItem, 0)
+	for _, j := range jobs {
+		if int(j.HealCount) < s.cfg.HealMaxAttempts {
+			continue // still being retried — not stuck
+		}
+		item := HealFailedItem{
+			JobID:          j.ID,
+			Name:           j.NZBName,
+			BrokenSymlinks: brokenByJob[j.ID],
+			LastHealError:  j.LastHealError,
+			HealCount:      j.HealCount,
+		}
+		if item.BrokenSymlinks == nil {
+			item.BrokenSymlinks = []string{}
+		}
+		if j.LastHealedAt != nil {
+			item.LastHealedAt = j.LastHealedAt.UTC().Format(time.RFC3339)
+		}
+		items = append(items, item)
+	}
+	s.writeJSON(w, items)
+}
+
+// handleHealRetry resets a job's heal attempts so the healer retries it.
+func (s *Server) handleHealRetry(w http.ResponseWriter, r *http.Request) {
+	j, ok := s.healJobFromURL(w, r)
+	if !ok {
+		return
+	}
+	if j.State != job.StateHealFailed {
+		s.writeJSON(w, ErrorResponse{Status: false,
+			Error: "job is not in heal_failed state"})
+		return
+	}
+	j.HealCount = 0
+	j.LastHealedAt = nil
+	j.LastHealError = ""
+	if err := s.store.UpdateJob(r.Context(), j); err != nil {
+		s.logger.Error("heal retry: updating job", "job_id", j.ID, "error", err)
+		s.writeJSON(w, ErrorResponse{Status: false, Error: "internal error"})
+		return
+	}
+	s.logger.Info("heal retry requested", "job_id", j.ID)
+	s.writeJSON(w, DeleteResponse{Status: true})
+}
+
+// handleHealGiveUp marks a job manually_resolved and stops tracking its
+// symlinks, so the healer ignores it.
+func (s *Server) handleHealGiveUp(w http.ResponseWriter, r *http.Request) {
+	j, ok := s.healJobFromURL(w, r)
+	if !ok {
+		return
+	}
+	if j.State != job.StateHealFailed {
+		s.writeJSON(w, ErrorResponse{Status: false,
+			Error: "job is not in heal_failed state"})
+		return
+	}
+	ctx := r.Context()
+	j.State = job.StateManuallyResolved
+	if err := s.store.UpdateJob(ctx, j); err != nil {
+		s.logger.Error("heal give_up: updating job", "job_id", j.ID, "error", err)
+		s.writeJSON(w, ErrorResponse{Status: false, Error: "internal error"})
+		return
+	}
+	if err := s.store.DeleteImportedSymlinksByJob(ctx, j.ID); err != nil {
+		s.logger.Error("heal give_up: dropping symlinks", "job_id", j.ID, "error", err)
+	}
+	s.logger.Info("heal given up", "job_id", j.ID)
+	s.writeJSON(w, DeleteResponse{Status: true})
+}
+
+// healJobFromURL loads the job named by the {jobID} URL parameter, writing an
+// error response and returning ok=false if it is missing or unparseable.
+func (s *Server) healJobFromURL(w http.ResponseWriter, r *http.Request) (*job.Job, bool) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "jobID"), 10, 64)
+	if err != nil {
+		s.writeJSON(w, ErrorResponse{Status: false, Error: "invalid job id"})
+		return nil, false
+	}
+	j, err := s.store.GetJob(r.Context(), id)
+	if err != nil {
+		s.writeJSON(w, ErrorResponse{Status: false, Error: "job not found"})
+		return nil, false
+	}
+	return j, true
 }
 
 // handleHealthz answers the /healthz probe.

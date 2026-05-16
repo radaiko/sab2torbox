@@ -8,30 +8,32 @@ type State string
 
 // Job lifecycle states.
 const (
-	StatePending     State = "pending"     // received from Sonarr, not yet sent to TorBox
-	StateSubmitting  State = "submitting"  // submit to TorBox in progress
-	StateQueued      State = "queued"      // accepted by TorBox, not yet transferring
-	StateDownloading State = "downloading" // TorBox is transferring
-	StateCompleted   State = "completed"   // finished and present; storage path resolved
-	StateImported    State = "imported"    // Sonarr has read the history entry
-	StateDeleted     State = "deleted"     // removed from TorBox at Sonarr's request
-	StateFailed      State = "failed"      // terminal error
-	StateHealing     State = "healing"     // resubmitted to TorBox, awaiting the new download
-	StateHealFailed  State = "heal_failed" // resubmission failed; retried with backoff
+	StatePending          State = "pending"           // received from Sonarr, not yet sent to TorBox
+	StateSubmitting       State = "submitting"        // submit to TorBox in progress
+	StateQueued           State = "queued"            // accepted by TorBox, not yet transferring
+	StateDownloading      State = "downloading"       // TorBox is transferring
+	StateCompleted        State = "completed"         // finished and present; storage path resolved
+	StateImported         State = "imported"          // Sonarr has read the history entry
+	StateDeleted          State = "deleted"           // removed from TorBox at Sonarr's request
+	StateFailed           State = "failed"            // terminal error
+	StateHealing          State = "healing"           // resubmitted to TorBox, awaiting the new download
+	StateHealFailed       State = "heal_failed"       // resubmission failed; retried with backoff
+	StateManuallyResolved State = "manually_resolved" // operator gave up on healing; healer ignores it
 )
 
 // transitions lists the allowed next states for each state.
 var transitions = map[State][]State{
-	StatePending:     {StateSubmitting, StateFailed},
-	StateSubmitting:  {StateQueued, StatePending, StateFailed},
-	StateQueued:      {StateDownloading, StateCompleted, StateFailed},
-	StateDownloading: {StateCompleted, StateFailed},
-	StateCompleted:   {StateImported, StateDeleted, StateFailed},
-	StateImported:    {StateDeleted, StateFailed, StateHealing},
-	StateHealing:     {StateImported, StateHealFailed},
-	StateHealFailed:  {StateHealing},
-	StateDeleted:     {},
-	StateFailed:      {},
+	StatePending:          {StateSubmitting, StateFailed},
+	StateSubmitting:       {StateQueued, StatePending, StateFailed},
+	StateQueued:           {StateDownloading, StateCompleted, StateFailed},
+	StateDownloading:      {StateCompleted, StateFailed},
+	StateCompleted:        {StateImported, StateDeleted, StateFailed},
+	StateImported:         {StateDeleted, StateFailed, StateHealing},
+	StateHealing:          {StateImported, StateHealFailed},
+	StateHealFailed:       {StateHealing, StateManuallyResolved},
+	StateManuallyResolved: {},
+	StateDeleted:          {},
+	StateFailed:           {},
 }
 
 // CanTransitionTo reports whether moving from s to next is allowed.

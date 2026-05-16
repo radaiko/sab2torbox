@@ -105,8 +105,18 @@ type SymlinkHealthResponse struct {
 	Broken     int64  `json:"broken"`
 	Healing    int64  `json:"healing"`
 	HealFailed int64  `json:"heal_failed"`
-	LastRun    string `json:"last_run"`
-	NextRun    string `json:"next_run"`
+	LastRun    string `json:"last_run,omitempty"`
+	NextRun    string `json:"next_run,omitempty"`
+}
+
+// HealFailedItem is one entry in the GET /health/heal_failed list.
+type HealFailedItem struct {
+	JobID          int64    `json:"job_id"`
+	Name           string   `json:"name"`
+	BrokenSymlinks []string `json:"broken_symlinks"`
+	LastHealError  string   `json:"last_heal_error"`
+	HealCount      int64    `json:"heal_count"`
+	LastHealedAt   string   `json:"last_healed_at,omitempty"`
 }
 
 // queueStatusLabel maps a job state to the SAB queue status string.

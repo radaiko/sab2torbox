@@ -222,3 +222,21 @@ func TestCountJobsByState(t *testing.T) {
 		t.Errorf("CountJobsByState healing: n=%d err=%v", n, err)
 	}
 }
+
+func TestDeleteImportedSymlinksByJob(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	jobA, _ := s.CreateJob(ctx, &job.Job{State: job.StateImported, Category: "c", NZBName: "a"})
+	jobB, _ := s.CreateJob(ctx, &job.Job{State: job.StateImported, Category: "c", NZBName: "b"})
+	s.UpsertImportedSymlink(ctx, &job.ImportedSymlink{JobID: jobA, SymlinkPath: "/l/a1", TargetPath: "/t/a1"})
+	s.UpsertImportedSymlink(ctx, &job.ImportedSymlink{JobID: jobA, SymlinkPath: "/l/a2", TargetPath: "/t/a2"})
+	s.UpsertImportedSymlink(ctx, &job.ImportedSymlink{JobID: jobB, SymlinkPath: "/l/b1", TargetPath: "/t/b1"})
+
+	if err := s.DeleteImportedSymlinksByJob(ctx, jobA); err != nil {
+		t.Fatalf("DeleteImportedSymlinksByJob: %v", err)
+	}
+	list, _ := s.ListImportedSymlinks(ctx)
+	if len(list) != 1 || list[0].JobID != jobB {
+		t.Errorf("only job B's symlink should remain, got %+v", list)
+	}
+}
