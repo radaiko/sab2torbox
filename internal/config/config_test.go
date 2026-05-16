@@ -11,6 +11,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("SAB2TORBOX_TORBOX_API_TOKEN", "tok")
 	t.Setenv("SAB2TORBOX_SAB_API_KEY", "key")
 	t.Setenv("SAB2TORBOX_WEBDAV_MOUNT_ROOT", dir)
+	t.Setenv("SAB2TORBOX_SYMLINK_ROOT", dir)
 
 	c, err := Load()
 	if err != nil {
@@ -39,25 +40,23 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
-func TestSymlinkModeEnabled(t *testing.T) {
-	if (&Config{}).SymlinkModeEnabled() {
-		t.Error("empty SymlinkRoot must mean symlink mode disabled")
-	}
-	if !(&Config{SymlinkRoot: "/mnt/smedia/_incoming"}).SymlinkModeEnabled() {
-		t.Error("a set SymlinkRoot must enable symlink mode")
-	}
-}
-
-func TestLoadValidatesSymlinkRoot(t *testing.T) {
+func TestLoadRequiresSymlinkRoot(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SAB2TORBOX_TORBOX_API_TOKEN", "t")
 	t.Setenv("SAB2TORBOX_SAB_API_KEY", "k")
 	t.Setenv("SAB2TORBOX_WEBDAV_MOUNT_ROOT", dir)
 
+	// SYMLINK_ROOT is required.
+	os.Unsetenv("SAB2TORBOX_SYMLINK_ROOT")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error when SYMLINK_ROOT is unset")
+	}
+	// Set but nonexistent — must fail validation.
 	t.Setenv("SAB2TORBOX_SYMLINK_ROOT", "/nonexistent/symlink/root/xyz")
 	if _, err := Load(); err == nil {
-		t.Fatal("expected error for a missing symlink root")
+		t.Fatal("expected error for a missing symlink root directory")
 	}
+	// Valid.
 	t.Setenv("SAB2TORBOX_SYMLINK_ROOT", dir)
 	if _, err := Load(); err != nil {
 		t.Fatalf("Load with a valid symlink root: %v", err)

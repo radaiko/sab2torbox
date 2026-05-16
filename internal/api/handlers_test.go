@@ -34,7 +34,8 @@ func testServer(t *testing.T) (*Server, *store.Store) {
 	st := newAPITestStore(t)
 	cfg := &config.Config{
 		SABAPIKey: "secret", WebDAVMountRoot: t.TempDir(),
-		WebDAVUsenetSubpath: "usenet", Categories: []string{"sonarr", "radarr"},
+		WebDAVUsenetSubpath: "usenet", SymlinkRoot: t.TempDir(),
+		Categories: []string{"sonarr", "radarr"},
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return NewServer(st, cfg, logger), st
@@ -188,11 +189,15 @@ func TestGetConfigAndFullstatus(t *testing.T) {
 	if len(cfg.Config.Categories) != 3 || cfg.Config.Misc.CompleteDir == "" {
 		t.Errorf("get_config: %+v", cfg.Config)
 	}
-	// Every category must report an empty dir: sab2torbox has no per-category
-	// folders, so Sonarr must not health-check a <complete_dir>/<category> path.
+	// "*" reports no dir; a named category maps to its own subdir under the
+	// symlink root, which sab2torbox pre-creates for the health check.
 	for _, c := range cfg.Config.Categories {
-		if c.Dir != "" {
-			t.Errorf("category %q reports dir %q, want empty", c.Name, c.Dir)
+		want := c.Name
+		if c.Name == "*" {
+			want = ""
+		}
+		if c.Dir != want {
+			t.Errorf("category %q reports dir %q, want %q", c.Name, c.Dir, want)
 		}
 	}
 
@@ -200,30 +205,6 @@ func TestGetConfigAndFullstatus(t *testing.T) {
 	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?mode=fullstatus&apikey=secret", nil))
 	if !strings.Contains(rec.Body.String(), `"status"`) {
 		t.Errorf("fullstatus: %s", rec.Body.String())
-	}
-}
-
-func TestGetConfigSymlinkMode(t *testing.T) {
-	srv, _ := testServer(t)
-	srv.cfg.SymlinkRoot = "/mnt/smedia/_incoming"
-
-	rec := httptest.NewRecorder()
-	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?mode=get_config&apikey=secret", nil))
-	var cfg ConfigResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if cfg.Config.Misc.CompleteDir != "/mnt/smedia/_incoming" {
-		t.Errorf("complete_dir: got %q want the symlink root", cfg.Config.Misc.CompleteDir)
-	}
-	var sonarr *Category
-	for i := range cfg.Config.Categories {
-		if cfg.Config.Categories[i].Name == "sonarr" {
-			sonarr = &cfg.Config.Categories[i]
-		}
-	}
-	if sonarr == nil || sonarr.Dir != "sonarr" {
-		t.Errorf("symlink mode: sonarr category should map to its own dir, got %+v", sonarr)
 	}
 }
 

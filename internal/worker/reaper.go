@@ -21,9 +21,7 @@ func (w *Workers) reapOnce(ctx context.Context) error {
 	if n > 0 {
 		w.logger.Info("reaped imported jobs", "count", n)
 	}
-	if w.cfg.SymlinkModeEnabled() {
-		w.sweepSymlinkFarm(ctx)
-	}
+	w.sweepSymlinkFarm(ctx)
 	return nil
 }
 

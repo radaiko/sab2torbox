@@ -71,6 +71,7 @@ func TestEndToEndSubmitPollCompleteDelete(t *testing.T) {
 	mountRoot := t.TempDir()
 	cfg := &config.Config{
 		WebDAVMountRoot: mountRoot, WebDAVUsenetSubpath: "usenet",
+		SymlinkRoot:  t.TempDir(),
 		PollInterval: 5 * time.Millisecond,
 	}
 	tb := torbox.NewWithBaseURL("tok", srv.URL+"/v1/api")
@@ -113,7 +114,7 @@ func TestEndToEndSubmitPollCompleteDelete(t *testing.T) {
 	if j.State != job.StateCompleted {
 		t.Fatalf("expected completed, got %s", j.State)
 	}
-	wantPath := filepath.Join(cfg.UsenetPath(), "Integration.Release")
+	wantPath := filepath.Join(cfg.SymlinkRoot, "sonarr", "Integration.Release")
 	if j.StoragePath != wantPath {
 		t.Fatalf("storage path: got %q want %q", j.StoragePath, wantPath)
 	}

@@ -2,11 +2,10 @@
 
 A small Go service that **pretends to be SABnzbd** to Sonarr/Radarr but submits
 NZBs to [TorBox](https://torbox.app)'s Usenet API instead of downloading them
-locally. Completed files are surfaced through TorBox's WebDAV mount, so the
-bytes only ever physically exist on TorBox's servers (cached locally by
-rclone's VFS). When Sonarr "imports" a release, it moves files *within the same
-rclone-mounted filesystem* — a rename, not a byte copy. The result is a
-**zero-local-storage** Usenet bridge.
+locally. The real bytes only ever exist on TorBox's servers, reached through a
+read-only rclone WebDAV mount. On completion sab2torbox publishes a **symlink
+farm** — one symlink per file — and Sonarr imports by moving the tiny *symlink*
+into its library. The result is a **zero-local-storage** Usenet bridge.
 
 ## How it works
 
@@ -17,54 +16,41 @@ rclone-mounted filesystem* — a rename, not a byte copy. The result is a
    │  client   │◀─ queue/ ────┤  (SQLite)  │  download    │ backend │
    └─────┬─────┘  history     └─────▲──────┘              └────┬────┘
          │                          │ poll mylist              │
-         │ import (rename)          └──────────────────────────┘
+         │ import (symlink rename)  └──────────────────────────┘
          ▼                                                      │
-   ┌──────────────────────── rclone WebDAV mount ────────────────┘
-   │  /mnt/torbox/<release>/          ◀── TorBox puts a folder here
-   │  /mnt/torbox/media/...           ◀── Sonarr library (SAME mount)
-   └──────────────────────────────────────────────────────────────
+   ┌─ /mnt/smedia (one local filesystem) ─┐   ┌─ rclone WebDAV ──┘
+   │  _incoming/<cat>/<release>/  ─symlink─┼──▶│ /mnt/torbox/<release>/
+   │  tv/Show/...   ◀── library            │   │   show.s01e01.mkv
+   └───────────────────────────────────────┘   └─ (real bytes, read-only)
 ```
 
 1. Sonarr submits an NZB to the SABnzbd-compatible API.
 2. sab2torbox stores it and a background worker submits it to TorBox.
 3. A poller watches TorBox's `mylist` until the download finishes.
-4. On completion, sab2torbox resolves the file path on the WebDAV mount and
-   reports the job as complete in the SAB `history` endpoint.
-5. Sonarr imports from that path. If its library is on the same mount, the
-   import is an instant rename.
-6. When Sonarr deletes the download (with `del_files`), sab2torbox deletes it
-   from TorBox too.
+4. On completion sab2torbox finds the release folder on the WebDAV mount and
+   builds a symlink farm at `<SYMLINK_ROOT>/<category>/<release>/` — one
+   symlink per file, pointing at the real file on the mount — then reports
+   that directory as the SAB `history` `storage` path.
+5. Sonarr moves the symlink into its library. Since `SYMLINK_ROOT` and the
+   library share a filesystem, the move is an instant rename.
+6. When Sonarr deletes the download (with `del_files`), sab2torbox removes it
+   from TorBox and deletes the symlink directory.
+
+Why symlinks? TorBox's WebDAV is **read-only** — Sonarr cannot move or rename
+anything on it. The symlink farm lives on a normal writable filesystem, so the
+import works while the media bytes still never leave TorBox.
 
 ## ⚠️ Critical requirement: imports must be a rename
 
-> Sonarr's import has to be a **rename within one filesystem**, never a
-> byte-for-byte copy — otherwise it is slow and storage is no longer zero.
-> What must share a filesystem depends on the mode (see *Storage modes* below):
->
-> - **Direct mode** — the Sonarr/Radarr library must sit on the rclone WebDAV
->   mount (`SAB2TORBOX_WEBDAV_MOUNT_ROOT`).
-> - **Symlink-farm mode** — the library must sit on the same filesystem as
->   `SAB2TORBOX_SYMLINK_ROOT`.
+> `SAB2TORBOX_SYMLINK_ROOT` and the Sonarr/Radarr library **must be on the same
+> local filesystem** (e.g. both under `/mnt/smedia`). Then Sonarr's import is a
+> symlink rename. If they are on different filesystems the move dereferences
+> the symlink into a full byte copy from TorBox — slow, and storage is no
+> longer zero.
 
-## Storage modes
+## The symlink farm
 
-sab2torbox can hand a completed download to Sonarr/Radarr two ways.
-
-### Direct mode (default)
-
-`SAB2TORBOX_SYMLINK_ROOT` unset. sab2torbox reports the TorBox release folder
-*on the rclone WebDAV mount* as the `storage` path, and Sonarr imports by
-moving files within that mount. Simple, but the library must live on the
-WebDAV mount itself.
-
-### Symlink-farm mode
-
-Set `SAB2TORBOX_SYMLINK_ROOT` (e.g. `/mnt/smedia/_incoming`). On completion
-sab2torbox creates one symlink per file under
-`<SYMLINK_ROOT>/<category>/<release>/`, each pointing at the real file on the
-WebDAV mount, and reports that directory as `storage`. Sonarr moves the tiny
-*symlink* into its library, so the library only has to share a filesystem with
-`SYMLINK_ROOT` — not with the WebDAV mount.
+On completion sab2torbox creates, under `SYMLINK_ROOT`:
 
 ```
   TorBox WebDAV mount         Symlink farm                  Library
@@ -117,6 +103,7 @@ services:
       - SAB2TORBOX_TORBOX_API_TOKEN=${TORBOX_API_TOKEN}
       - SAB2TORBOX_SAB_API_KEY=${SAB_API_KEY}
       - SAB2TORBOX_WEBDAV_MOUNT_ROOT=/mnt/torbox
+      - SAB2TORBOX_SYMLINK_ROOT=/mnt/smedia/_incoming
       - TZ=Europe/Vienna
     ports:
       - "8181:8080"
@@ -127,10 +114,17 @@ services:
         target: /mnt/torbox
         bind:
           propagation: rslave
+      - type: bind
+        source: /mnt/smedia
+        target: /mnt/smedia
+        bind:
+          propagation: rslave
 ```
 
 `./config` must be writable by uid **65532** (the distroless `nonroot` user).
-A full example is in [`deploy/docker-compose.yml`](deploy/docker-compose.yml).
+Mount `/mnt/torbox` and `/mnt/smedia` into the Sonarr/Radarr (and Plex/Jellyfin)
+containers at the same paths. A full example is in
+[`deploy/docker-compose.yml`](deploy/docker-compose.yml).
 
 ### 2. Configure Sonarr / Radarr
 
@@ -173,7 +167,7 @@ All configuration is via `SAB2TORBOX_*` environment variables.
 | `SAB2TORBOX_SAB_API_KEY` | yes | — | API key Sonarr/Radarr authenticate with |
 | `SAB2TORBOX_WEBDAV_MOUNT_ROOT` | yes | — | Host path of the rclone WebDAV mount |
 | `SAB2TORBOX_WEBDAV_USENET_SUBPATH` | no | _(empty)_ | Subpath under the mount root where release folders appear; empty = mount root |
-| `SAB2TORBOX_SYMLINK_ROOT` | no | _(empty)_ | Enables symlink-farm mode (see *Storage modes*); empty = direct mode |
+| `SAB2TORBOX_SYMLINK_ROOT` | yes | — | Root of the symlink farm; must share a filesystem with the media library |
 | `SAB2TORBOX_LISTEN_ADDR` | no | `:8080` | HTTP bind address |
 | `SAB2TORBOX_DATABASE_PATH` | no | `/config/sab2torbox.db` | SQLite database path |
 | `SAB2TORBOX_POLL_INTERVAL` | no | `10s` | How often to poll TorBox for in-flight jobs |
@@ -219,15 +213,20 @@ directly under the mount root).
 
 **Sonarr: "download client places downloads in `…` but this directory does not
 appear to exist inside the container."**
-Two causes: (1) `WEBDAV_USENET_SUBPATH` points at a folder that doesn't exist —
-leave it empty so `complete_dir` is the mount root itself; (2) `WEBDAV_MOUNT_ROOT`
-must be bind-mounted into the Sonarr/Radarr container at the *same* path it has
-in sab2torbox. sab2torbox reports no per-category subfolders, so Sonarr only
-needs the mount root to exist — not a `<mount>/<category>` directory.
+`SYMLINK_ROOT` (and so each `<SYMLINK_ROOT>/<category>/` directory) must be
+bind-mounted into the Sonarr/Radarr container at the *same* path it has in
+sab2torbox. sab2torbox pre-creates the category directories at startup, so they
+exist as long as the mount is shared.
 
 **Sonarr import is slow / copies bytes.**
-The library root is not on the rclone WebDAV mount. Move it onto the same mount
-as `WEBDAV_MOUNT_ROOT` so the import is a rename. See the warning above.
+The library is not on the same filesystem as `SYMLINK_ROOT`, so moving the
+symlink dereferences it into a full copy from TorBox. Put the library and
+`SYMLINK_ROOT` under one filesystem (e.g. both on `/mnt/smedia`).
+
+**Imported files won't play / show as missing.**
+The symlink targets are absolute `/mnt/torbox/...` paths. Every container that
+*reads* the media — Sonarr for analysis, Plex/Jellyfin — must mount the WebDAV
+path at that exact path, or the links dangle.
 
 **Duplicate submissions.**
 Expected — Sonarr retries sometimes. sab2torbox deduplicates by NZB SHA256

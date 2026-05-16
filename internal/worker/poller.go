@@ -140,17 +140,13 @@ func (w *Workers) reconcile(ctx context.Context, j *job.Job, rec torbox.UsenetDo
 			}
 			return reconcileAwaitingWebDAV
 		}
-		storagePath := sourceDir
-		if w.cfg.SymlinkModeEnabled() {
-			farm, ferr := buildSymlinkFarm(w.cfg.SymlinkRoot, j.Category, rec.Name, sourceDir)
-			if ferr != nil {
-				log.Error("building symlink farm", "error", ferr)
-				if uerr := w.store.UpdateJob(ctx, j); uerr != nil {
-					log.Error("persisting progress", "error", uerr)
-				}
-				return reconcileAwaitingWebDAV
+		storagePath, ferr := buildSymlinkFarm(w.cfg.SymlinkRoot, j.Category, rec.Name, sourceDir)
+		if ferr != nil {
+			log.Error("building symlink farm", "error", ferr)
+			if uerr := w.store.UpdateJob(ctx, j); uerr != nil {
+				log.Error("persisting progress", "error", uerr)
 			}
-			storagePath = farm
+			return reconcileAwaitingWebDAV
 		}
 		now := time.Now()
 		j.State = job.StateCompleted

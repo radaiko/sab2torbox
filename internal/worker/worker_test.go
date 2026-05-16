@@ -65,6 +65,7 @@ func testWorkers(t *testing.T, tb TorBoxAPI) (*Workers, *store.Store, *config.Co
 	t.Cleanup(func() { st.Close() })
 	cfg := &config.Config{
 		WebDAVMountRoot: t.TempDir(), WebDAVUsenetSubpath: "usenet",
+		SymlinkRoot:  t.TempDir(),
 		PollInterval: 10 * time.Millisecond,
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -134,38 +135,6 @@ func TestPollerProgressUpdate(t *testing.T) {
 	}
 	if got.ETASeconds != 120 {
 		t.Errorf("eta not propagated: got %d want 120", got.ETASeconds)
-	}
-}
-
-func TestPollerCompletesAndResolvesPath(t *testing.T) {
-	fake := &fakeTorBox{}
-	w, st, cfg := testWorkers(t, fake)
-	ctx := context.Background()
-	relDir := filepath.Join(cfg.UsenetPath(), "Rel.Complete")
-	if err := os.MkdirAll(relDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateDownloading, Category: "sonarr", NZBName: "Rel.Complete"})
-	j, _ := st.GetJob(ctx, id)
-	j.TorBoxID = 200
-	st.UpdateJob(ctx, j)
-
-	fake.list = []torbox.UsenetDownload{{
-		ID: 200, Name: "Rel.Complete", Size: 1000, Progress: 1,
-		DownloadFinished: true, DownloadPresent: true, DownloadState: "completed",
-	}}
-	if err := w.pollOnce(ctx); err != nil {
-		t.Fatalf("pollOnce: %v", err)
-	}
-	got, _ := st.GetJob(ctx, id)
-	if got.State != job.StateCompleted {
-		t.Fatalf("state: got %s want completed", got.State)
-	}
-	if got.StoragePath != relDir {
-		t.Errorf("storage path: got %q want %q", got.StoragePath, relDir)
-	}
-	if got.CompletedAt == nil {
-		t.Error("completed_at not set")
 	}
 }
 
@@ -359,10 +328,9 @@ func TestDeleterRetriesThenGivesUp(t *testing.T) {
 	}
 }
 
-func TestPollerSymlinkModeBuildsFarm(t *testing.T) {
+func TestPollerCompletesAndBuildsFarm(t *testing.T) {
 	fake := &fakeTorBox{}
 	w, st, cfg := testWorkers(t, fake)
-	cfg.SymlinkRoot = t.TempDir()
 	ctx := context.Background()
 
 	relName := "The.Rookie.S08E01.GERMAN"
@@ -397,12 +365,14 @@ func TestPollerSymlinkModeBuildsFarm(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(wantStorage, "ep.mkv")); err != nil {
 		t.Errorf("symlink not created: %v", err)
 	}
+	if got.CompletedAt == nil {
+		t.Error("completed_at not set")
+	}
 }
 
 func TestDeleterRemovesSymlinkDir(t *testing.T) {
 	fake := &fakeTorBox{}
 	w, st, cfg := testWorkers(t, fake)
-	cfg.SymlinkRoot = t.TempDir()
 	ctx := context.Background()
 
 	farm := filepath.Join(cfg.SymlinkRoot, "sonarr-stream", "Rel")
@@ -429,7 +399,6 @@ func TestDeleterRemovesSymlinkDir(t *testing.T) {
 func TestReaperSweepsSymlinkFarm(t *testing.T) {
 	fake := &fakeTorBox{}
 	w, _, cfg := testWorkers(t, fake)
-	cfg.SymlinkRoot = t.TempDir()
 	cfg.Categories = []string{"sonarr-stream"}
 	ctx := context.Background()
 	catDir := filepath.Join(cfg.SymlinkRoot, "sonarr-stream")

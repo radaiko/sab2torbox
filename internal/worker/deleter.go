@@ -48,8 +48,8 @@ func (w *Workers) deleteJob(ctx context.Context, j *job.Job) {
 			log.Info("download deleted from torbox")
 		}
 	}
-	// Remove the per-release symlink directory, if symlink mode created one.
-	if w.cfg.SymlinkModeEnabled() && j.StoragePath != "" {
+	// Remove the per-release symlink directory.
+	if j.StoragePath != "" {
 		if err := removeSymlinkDir(w.cfg.SymlinkRoot, j.StoragePath); err != nil {
 			log.Warn("removing symlink directory", "dir", j.StoragePath, "error", err)
 		}

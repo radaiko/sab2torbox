@@ -43,10 +43,8 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if cfg.SymlinkModeEnabled() {
-		if err := worker.EnsureCategoryDirs(cfg.SymlinkRoot, cfg.Categories); err != nil {
-			return fmt.Errorf("preparing symlink category directories: %w", err)
-		}
+	if err := worker.EnsureCategoryDirs(cfg.SymlinkRoot, cfg.Categories); err != nil {
+		return fmt.Errorf("preparing symlink category directories: %w", err)
 	}
 
 	st, err := store.Open(ctx, cfg.DatabasePath)
