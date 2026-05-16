@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/radaiko/sab2torbox/internal/config"
@@ -37,6 +38,10 @@ type Workers struct {
 	httpClient         *http.Client
 	lastWebDAVRefresh  time.Time
 	webdavBackoffUntil time.Time
+
+	// healLastRun is the Unix-nanos timestamp of the last healOnce run,
+	// read by the /health/symlinks endpoint. Atomic for cross-goroutine reads.
+	healLastRun atomic.Int64
 }
 
 // New constructs a Workers.
@@ -51,27 +56,48 @@ func New(st *store.Store, tb TorBoxAPI, cfg *config.Config, logger *slog.Logger)
 	}
 }
 
-// Run starts all three loops and blocks until ctx is cancelled.
+// loopSpec is one background loop: a name, a tick interval, and the function
+// run each tick.
+type loopSpec struct {
+	name     string
+	interval time.Duration
+	fn       func(context.Context) error
+}
+
+// Run starts every background loop and blocks until ctx is cancelled.
 func (w *Workers) Run(ctx context.Context) {
-	var wg sync.WaitGroup
-	loops := []struct {
-		name     string
-		interval time.Duration
-		fn       func(context.Context) error
-	}{
+	loops := []loopSpec{
 		{"submitter", w.cfg.PollInterval, w.submitOnce},
 		{"poller", w.cfg.PollInterval, w.pollOnce},
 		{"deleter", w.cfg.PollInterval, w.deleteOnce},
 		{"reaper", 5 * time.Minute, w.reapOnce},
 	}
+	if w.cfg.HealEnabled {
+		loops = append(loops,
+			loopSpec{"healer", w.cfg.HealInterval, w.healOnce},
+			loopSpec{"heal-reconciler", w.cfg.PollInterval, w.healReconcileOnce},
+		)
+	}
+	var wg sync.WaitGroup
 	for _, l := range loops {
 		wg.Add(1)
-		go func(name string, interval time.Duration, fn func(context.Context) error) {
+		go func(spec loopSpec) {
 			defer wg.Done()
-			w.loop(ctx, name, interval, fn)
-		}(l.name, l.interval, l.fn)
+			w.loop(ctx, spec.name, spec.interval, spec.fn)
+		}(l)
 	}
 	wg.Wait()
+}
+
+// HealRunInfo returns the last and next scheduled healer run. Both are zero
+// before the first run or when healing is disabled.
+func (w *Workers) HealRunInfo() (last, next time.Time) {
+	n := w.healLastRun.Load()
+	if n == 0 {
+		return time.Time{}, time.Time{}
+	}
+	last = time.Unix(0, n)
+	return last, last.Add(w.cfg.HealInterval)
 }
 
 // loop runs fn immediately, then every interval, until ctx is cancelled.

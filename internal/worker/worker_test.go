@@ -598,3 +598,11 @@ func TestPollerWebDAVRefreshBacksOffOn429(t *testing.T) {
 		t.Errorf("429 should trigger backoff; got %d refresh attempts", hits.Load())
 	}
 }
+
+func TestHealRunInfoZeroBeforeFirstRun(t *testing.T) {
+	w, _, _ := testWorkers(t, &fakeTorBox{})
+	last, next := w.HealRunInfo()
+	if !last.IsZero() || !next.IsZero() {
+		t.Errorf("expected zero times before the first heal run, got %v / %v", last, next)
+	}
+}
