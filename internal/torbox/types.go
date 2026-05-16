@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // FlexInt is an int64 that decodes from a JSON number OR a JSON string.
@@ -104,13 +105,14 @@ func (d UsenetDownload) ProgressPct() int {
 }
 
 // Failed reports whether the download is in a TorBox error/failed state.
+// TorBox appends a human-readable reason to the state string, e.g.
+// "failed (Repair failed, not enough repair blocks (73 short))", so the match
+// is by prefix/keyword rather than an exact string comparison.
 func (d UsenetDownload) Failed() bool {
-	switch d.DownloadState {
-	case "failed", "error", "stalled (no seeds)", "stalledDL":
-		return true
-	default:
-		return false
-	}
+	s := strings.ToLower(strings.TrimSpace(d.DownloadState))
+	return strings.HasPrefix(s, "failed") ||
+		strings.HasPrefix(s, "error") ||
+		strings.Contains(s, "stalled")
 }
 
 // DownloadedBytes estimates transferred bytes from progress and total size.

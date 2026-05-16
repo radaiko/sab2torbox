@@ -75,7 +75,18 @@ func TestProgressPctAndFailed(t *testing.T) {
 	if !(UsenetDownload{DownloadState: "failed"}).Failed() {
 		t.Error("failed state should report Failed")
 	}
+	// TorBox appends a reason to the state string.
+	repairFail := "failed (Repair failed, not enough repair blocks (73 short))"
+	if !(UsenetDownload{DownloadState: repairFail}).Failed() {
+		t.Error("repair-failure state should report Failed")
+	}
+	if !(UsenetDownload{DownloadState: "stalled (no seeds)"}).Failed() {
+		t.Error("stalled state should report Failed")
+	}
 	if (UsenetDownload{DownloadState: "downloading"}).Failed() {
 		t.Error("downloading should not report Failed")
+	}
+	if (UsenetDownload{DownloadState: "completed"}).Failed() {
+		t.Error("completed should not report Failed")
 	}
 }

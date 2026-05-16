@@ -170,11 +170,17 @@ func TestPollerMarksFailed(t *testing.T) {
 	j, _ := st.GetJob(ctx, id)
 	j.TorBoxID = 300
 	st.UpdateJob(ctx, j)
-	fake.list = []torbox.UsenetDownload{{ID: 300, DownloadState: "failed"}}
+	fake.list = []torbox.UsenetDownload{{
+		ID:            300,
+		DownloadState: "failed (Repair failed, not enough repair blocks (73 short))",
+	}}
 	w.pollOnce(ctx)
 	got, _ := st.GetJob(ctx, id)
 	if got.State != job.StateFailed {
 		t.Errorf("state: got %s want failed", got.State)
+	}
+	if got.FailMessage == "" {
+		t.Error("fail_message should carry the TorBox reason for Sonarr")
 	}
 }
 
