@@ -26,11 +26,22 @@ type Workers struct {
 	tb     TorBoxAPI
 	cfg    *config.Config
 	logger *slog.Logger
+
+	// missingPolls counts, per TorBox ID, how many consecutive polls a job
+	// has been absent from the TorBox list. Touched only by the single
+	// poller goroutine, so it needs no lock.
+	missingPolls map[int64]int
 }
 
 // New constructs a Workers.
 func New(st *store.Store, tb TorBoxAPI, cfg *config.Config, logger *slog.Logger) *Workers {
-	return &Workers{store: st, tb: tb, cfg: cfg, logger: logger}
+	return &Workers{
+		store:        st,
+		tb:           tb,
+		cfg:          cfg,
+		logger:       logger,
+		missingPolls: map[int64]int{},
+	}
 }
 
 // Run starts all three loops and blocks until ctx is cancelled.

@@ -202,6 +202,69 @@ func TestPollerSkipsJobMissingFromList(t *testing.T) {
 	}
 }
 
+func TestPollerFailsJobMissingFromListAfterThreshold(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, _ := testWorkers(t, fake)
+	ctx := context.Background()
+	old := missingPollThreshold
+	missingPollThreshold = 3
+	defer func() { missingPollThreshold = old }()
+
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateQueued, Category: "sonarr", NZBName: "Vanished"})
+	j, _ := st.GetJob(ctx, id)
+	j.TorBoxID = 777
+	st.UpdateJob(ctx, j)
+	fake.list = nil // job 777 is never in the TorBox list
+
+	for i := 1; i < missingPollThreshold; i++ {
+		if err := w.pollOnce(ctx); err != nil {
+			t.Fatalf("pollOnce %d: %v", i, err)
+		}
+		if got, _ := st.GetJob(ctx, id); got.State != job.StateQueued {
+			t.Fatalf("poll %d: job failed too early (state %s)", i, got.State)
+		}
+	}
+	if err := w.pollOnce(ctx); err != nil { // threshold reached
+		t.Fatalf("pollOnce final: %v", err)
+	}
+	got, _ := st.GetJob(ctx, id)
+	if got.State != job.StateFailed {
+		t.Errorf("state: got %s want failed after %d misses", got.State, missingPollThreshold)
+	}
+	if got.FailMessage == "" {
+		t.Error("fail_message should explain the disappearance to Sonarr")
+	}
+}
+
+func TestPollerMissCounterResetsOnReappear(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, _ := testWorkers(t, fake)
+	ctx := context.Background()
+	old := missingPollThreshold
+	missingPollThreshold = 3
+	defer func() { missingPollThreshold = old }()
+
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateQueued, Category: "sonarr", NZBName: "Flaky"})
+	j, _ := st.GetJob(ctx, id)
+	j.TorBoxID = 888
+	st.UpdateJob(ctx, j)
+
+	fake.list = nil
+	w.pollOnce(ctx) // miss 1
+	w.pollOnce(ctx) // miss 2
+
+	// Job reappears before the threshold; counter must reset.
+	fake.list = []torbox.UsenetDownload{{ID: 888, DownloadState: "downloading", Progress: 0.3, Size: 100}}
+	w.pollOnce(ctx)
+
+	fake.list = nil
+	w.pollOnce(ctx) // miss 1 again, not 3
+	w.pollOnce(ctx) // miss 2
+	if got, _ := st.GetJob(ctx, id); got.State == job.StateFailed {
+		t.Error("counter should have reset when the job reappeared in the list")
+	}
+}
+
 func TestPollerCompletedWaitsForMissingPath(t *testing.T) {
 	fake := &fakeTorBox{}
 	w, st, _ := testWorkers(t, fake)
