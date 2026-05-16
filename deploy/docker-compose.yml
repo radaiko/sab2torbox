@@ -10,6 +10,9 @@ services:
       # Leave empty: TorBox creates one folder per release directly under the
       # mount root. Set only if your WebDAV nests releases under a subdir.
       - SAB2TORBOX_WEBDAV_USENET_SUBPATH=
+      # Optional symlink-farm mode (see README "Storage modes"). When set, also
+      # bind-mount that filesystem below and into the Sonarr/Plex containers.
+      # - SAB2TORBOX_SYMLINK_ROOT=/mnt/smedia/_incoming
       - SAB2TORBOX_DATABASE_PATH=/config/sab2torbox.db
       - SAB2TORBOX_POLL_INTERVAL=10s
       - SAB2TORBOX_LOG_LEVEL=info
@@ -31,6 +34,12 @@ services:
         target: /mnt/torbox
         bind:
           propagation: rslave
+      # Symlink-farm mode only: the filesystem holding SYMLINK_ROOT.
+      # - type: bind
+      #   source: /mnt/smedia
+      #   target: /mnt/smedia
+      #   bind:
+      #     propagation: rslave
     healthcheck:
       test: ["CMD", "/sab2torbox", "healthcheck"]
       interval: 30s

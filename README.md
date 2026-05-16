@@ -35,15 +35,53 @@ rclone-mounted filesystem* — a rename, not a byte copy. The result is a
 6. When Sonarr deletes the download (with `del_files`), sab2torbox deletes it
    from TorBox too.
 
-## ⚠️ Critical requirement: same filesystem
+## ⚠️ Critical requirement: imports must be a rename
 
-> **The Sonarr/Radarr library root MUST live on the same rclone WebDAV mount as
-> `SAB2TORBOX_WEBDAV_MOUNT_ROOT`.**
+> Sonarr's import has to be a **rename within one filesystem**, never a
+> byte-for-byte copy — otherwise it is slow and storage is no longer zero.
+> What must share a filesystem depends on the mode (see *Storage modes* below):
 >
-> If the library is on a different filesystem, Sonarr's import becomes a full
-> byte-for-byte copy — slow, and it defeats the entire zero-storage purpose.
-> Keep both the Usenet download folders and the media library under the one
-> rclone mount (e.g. `/mnt/torbox/<release>/` and `/mnt/torbox/media/...`).
+> - **Direct mode** — the Sonarr/Radarr library must sit on the rclone WebDAV
+>   mount (`SAB2TORBOX_WEBDAV_MOUNT_ROOT`).
+> - **Symlink-farm mode** — the library must sit on the same filesystem as
+>   `SAB2TORBOX_SYMLINK_ROOT`.
+
+## Storage modes
+
+sab2torbox can hand a completed download to Sonarr/Radarr two ways.
+
+### Direct mode (default)
+
+`SAB2TORBOX_SYMLINK_ROOT` unset. sab2torbox reports the TorBox release folder
+*on the rclone WebDAV mount* as the `storage` path, and Sonarr imports by
+moving files within that mount. Simple, but the library must live on the
+WebDAV mount itself.
+
+### Symlink-farm mode
+
+Set `SAB2TORBOX_SYMLINK_ROOT` (e.g. `/mnt/smedia/_incoming`). On completion
+sab2torbox creates one symlink per file under
+`<SYMLINK_ROOT>/<category>/<release>/`, each pointing at the real file on the
+WebDAV mount, and reports that directory as `storage`. Sonarr moves the tiny
+*symlink* into its library, so the library only has to share a filesystem with
+`SYMLINK_ROOT` — not with the WebDAV mount.
+
+```
+  TorBox WebDAV mount         Symlink farm                  Library
+  /mnt/torbox/<release>/  ◀──  /mnt/smedia/_incoming/   ──▶  /mnt/smedia/tv/
+    show.s01e01.mkv       ◀──    sonarr/<release>/           Show/s01e01.mkv
+    (real bytes)                 show.s01e01.mkv  ──────────┘ (symlink, moved)
+```
+
+Requirements:
+- `SYMLINK_ROOT` and the library on the same local filesystem (e.g. both under
+  `/mnt/smedia`) so the symlink move is a rename.
+- Every container that *reads* the media — Sonarr for analysis, Plex/Jellyfin —
+  must mount the WebDAV path (`/mnt/torbox`) at the **same absolute path**, or
+  the symlinks dangle.
+- sab2torbox cleans the farm itself: the deleter removes a release directory
+  when Sonarr deletes the download; the reaper sweeps out empty (post-import)
+  and orphaned directories. It never removes `<SYMLINK_ROOT>/<category>/`.
 
 ## ⚠️ WebDAV layout: folder mode required
 
@@ -135,6 +173,7 @@ All configuration is via `SAB2TORBOX_*` environment variables.
 | `SAB2TORBOX_SAB_API_KEY` | yes | — | API key Sonarr/Radarr authenticate with |
 | `SAB2TORBOX_WEBDAV_MOUNT_ROOT` | yes | — | Host path of the rclone WebDAV mount |
 | `SAB2TORBOX_WEBDAV_USENET_SUBPATH` | no | _(empty)_ | Subpath under the mount root where release folders appear; empty = mount root |
+| `SAB2TORBOX_SYMLINK_ROOT` | no | _(empty)_ | Enables symlink-farm mode (see *Storage modes*); empty = direct mode |
 | `SAB2TORBOX_LISTEN_ADDR` | no | `:8080` | HTTP bind address |
 | `SAB2TORBOX_DATABASE_PATH` | no | `/config/sab2torbox.db` | SQLite database path |
 | `SAB2TORBOX_POLL_INTERVAL` | no | `10s` | How often to poll TorBox for in-flight jobs |

@@ -203,6 +203,30 @@ func TestGetConfigAndFullstatus(t *testing.T) {
 	}
 }
 
+func TestGetConfigSymlinkMode(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.cfg.SymlinkRoot = "/mnt/smedia/_incoming"
+
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?mode=get_config&apikey=secret", nil))
+	var cfg ConfigResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if cfg.Config.Misc.CompleteDir != "/mnt/smedia/_incoming" {
+		t.Errorf("complete_dir: got %q want the symlink root", cfg.Config.Misc.CompleteDir)
+	}
+	var sonarr *Category
+	for i := range cfg.Config.Categories {
+		if cfg.Config.Categories[i].Name == "sonarr" {
+			sonarr = &cfg.Config.Categories[i]
+		}
+	}
+	if sonarr == nil || sonarr.Dir != "sonarr" {
+		t.Errorf("symlink mode: sonarr category should map to its own dir, got %+v", sonarr)
+	}
+}
+
 func TestAddURLCreatesAndIsIdempotent(t *testing.T) {
 	srv, st := testServer(t)
 	u := "/api?mode=addurl&apikey=secret&cat=sonarr&name=" +

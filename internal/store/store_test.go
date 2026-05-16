@@ -105,6 +105,32 @@ func TestDeleteJob(t *testing.T) {
 	}
 }
 
+func TestActiveStoragePaths(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	mk := func(state job.State, sp string) {
+		id, _ := s.CreateJob(ctx, &job.Job{State: state, Category: "c", NZBName: "n"})
+		j, _ := s.GetJob(ctx, id)
+		j.StoragePath = sp
+		if err := s.UpdateJob(ctx, j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk(job.StateCompleted, "/farm/a")
+	mk(job.StateImported, "/farm/b")
+	mk(job.StateDeleted, "/farm/c") // terminal -> excluded
+	mk(job.StateFailed, "/farm/d")  // terminal -> excluded
+	mk(job.StateDownloading, "")    // no storage path -> excluded
+
+	paths, err := s.ActiveStoragePaths(ctx)
+	if err != nil {
+		t.Fatalf("ActiveStoragePaths: %v", err)
+	}
+	if len(paths) != 2 {
+		t.Errorf("got %v, want 2 active paths (/farm/a, /farm/b)", paths)
+	}
+}
+
 func TestReapImported(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

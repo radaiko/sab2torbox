@@ -359,6 +359,118 @@ func TestDeleterRetriesThenGivesUp(t *testing.T) {
 	}
 }
 
+func TestPollerSymlinkModeBuildsFarm(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, cfg := testWorkers(t, fake)
+	cfg.SymlinkRoot = t.TempDir()
+	ctx := context.Background()
+
+	relName := "The.Rookie.S08E01.GERMAN"
+	srcDir := filepath.Join(cfg.UsenetPath(), relName)
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "ep.mkv"), []byte("v"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateDownloading, Category: "sonarr-stream", NZBName: relName})
+	j, _ := st.GetJob(ctx, id)
+	j.TorBoxID = 10
+	st.UpdateJob(ctx, j)
+	fake.list = []torbox.UsenetDownload{{
+		ID: 10, Name: relName, Size: 1, Progress: 1,
+		DownloadFinished: true, DownloadPresent: true,
+	}}
+
+	if err := w.pollOnce(ctx); err != nil {
+		t.Fatalf("pollOnce: %v", err)
+	}
+	got, _ := st.GetJob(ctx, id)
+	if got.State != job.StateCompleted {
+		t.Fatalf("state: got %s want completed", got.State)
+	}
+	wantStorage := filepath.Join(cfg.SymlinkRoot, "sonarr-stream", relName)
+	if got.StoragePath != wantStorage {
+		t.Errorf("storage_path: got %q want %q", got.StoragePath, wantStorage)
+	}
+	if _, err := os.Lstat(filepath.Join(wantStorage, "ep.mkv")); err != nil {
+		t.Errorf("symlink not created: %v", err)
+	}
+}
+
+func TestDeleterRemovesSymlinkDir(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, cfg := testWorkers(t, fake)
+	cfg.SymlinkRoot = t.TempDir()
+	ctx := context.Background()
+
+	farm := filepath.Join(cfg.SymlinkRoot, "sonarr-stream", "Rel")
+	if err := os.MkdirAll(farm, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateDeleted, Category: "sonarr-stream", NZBName: "Rel"})
+	j, _ := st.GetJob(ctx, id)
+	j.TorBoxID = 11
+	j.StoragePath = farm
+	st.UpdateJob(ctx, j)
+
+	if err := w.deleteOnce(ctx); err != nil {
+		t.Fatalf("deleteOnce: %v", err)
+	}
+	if _, err := os.Stat(farm); err == nil {
+		t.Error("symlink dir should be removed by the deleter")
+	}
+	if _, err := st.GetJob(ctx, id); err == nil {
+		t.Error("job row should be removed")
+	}
+}
+
+func TestReaperSweepsSymlinkFarm(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, _, cfg := testWorkers(t, fake)
+	cfg.SymlinkRoot = t.TempDir()
+	cfg.Categories = []string{"sonarr-stream"}
+	ctx := context.Background()
+	catDir := filepath.Join(cfg.SymlinkRoot, "sonarr-stream")
+
+	emptyDir := filepath.Join(catDir, "Imported.Release")
+	if err := os.MkdirAll(emptyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	orphanDir := filepath.Join(catDir, "Orphan.Release")
+	if err := os.MkdirAll(orphanDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "gone.mkv"), filepath.Join(orphanDir, "gone.mkv")); err != nil {
+		t.Fatal(err)
+	}
+	srcFile := filepath.Join(t.TempDir(), "live.mkv")
+	if err := os.WriteFile(srcFile, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	liveDir := filepath.Join(catDir, "Live.Release")
+	if err := os.MkdirAll(liveDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(srcFile, filepath.Join(liveDir, "live.mkv")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := w.reapOnce(ctx); err != nil {
+		t.Fatalf("reapOnce: %v", err)
+	}
+	if _, err := os.Stat(emptyDir); err == nil {
+		t.Error("empty dir should be swept")
+	}
+	if _, err := os.Stat(orphanDir); err == nil {
+		t.Error("orphan (all-broken) dir should be swept")
+	}
+	if _, err := os.Stat(liveDir); err != nil {
+		t.Error("live dir should be kept")
+	}
+}
+
 func TestReaperRemovesOldImported(t *testing.T) {
 	fake := &fakeTorBox{}
 	w, st, _ := testWorkers(t, fake)

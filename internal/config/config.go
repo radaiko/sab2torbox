@@ -17,6 +17,7 @@ type Config struct {
 	SABAPIKey           string        `envconfig:"SAB_API_KEY" required:"true"`
 	WebDAVMountRoot     string        `envconfig:"WEBDAV_MOUNT_ROOT" required:"true"`
 	WebDAVUsenetSubpath string        `envconfig:"WEBDAV_USENET_SUBPATH"`
+	SymlinkRoot         string        `envconfig:"SYMLINK_ROOT"`
 	ListenAddr          string        `envconfig:"LISTEN_ADDR" default:":8080"`
 	DatabasePath        string        `envconfig:"DATABASE_PATH" default:"/config/sab2torbox.db"`
 	PollInterval        time.Duration `envconfig:"POLL_INTERVAL" default:"10s"`
@@ -41,8 +42,22 @@ func Load() (*Config, error) {
 	if err := c.validateMount(); err != nil {
 		return nil, err
 	}
+	if c.SymlinkRoot != "" {
+		info, err := os.Stat(c.SymlinkRoot)
+		if err != nil {
+			return nil, fmt.Errorf("symlink root %q: %w", c.SymlinkRoot, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("symlink root %q is not a directory", c.SymlinkRoot)
+		}
+	}
 	return &c, nil
 }
+
+// SymlinkModeEnabled reports whether sab2torbox publishes completed downloads
+// as a symlink farm under SymlinkRoot. When disabled (SymlinkRoot empty), the
+// WebDAV release folder is reported to Sonarr directly.
+func (c *Config) SymlinkModeEnabled() bool { return c.SymlinkRoot != "" }
 
 // validateMount ensures the WebDAV mount root exists and is a directory.
 func (c *Config) validateMount() error {

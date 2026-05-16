@@ -205,6 +205,27 @@ func (s *Store) findOne(ctx context.Context, where string, args ...any) (*job.Jo
 	return j, nil
 }
 
+// ActiveStoragePaths returns the storage_path of every job not in a terminal
+// state. The reaper uses it to avoid removing a symlink directory still in use.
+func (s *Store) ActiveStoragePaths(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT storage_path FROM jobs WHERE storage_path <> '' AND state NOT IN (?, ?)`,
+		job.StateDeleted, job.StateFailed)
+	if err != nil {
+		return nil, fmt.Errorf("querying active storage paths: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // ReapImported deletes imported jobs whose updated_at is older than cutoff and
 // returns the number removed.
 func (s *Store) ReapImported(ctx context.Context, cutoff time.Time) (int64, error) {

@@ -39,6 +39,31 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+func TestSymlinkModeEnabled(t *testing.T) {
+	if (&Config{}).SymlinkModeEnabled() {
+		t.Error("empty SymlinkRoot must mean symlink mode disabled")
+	}
+	if !(&Config{SymlinkRoot: "/mnt/smedia/_incoming"}).SymlinkModeEnabled() {
+		t.Error("a set SymlinkRoot must enable symlink mode")
+	}
+}
+
+func TestLoadValidatesSymlinkRoot(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SAB2TORBOX_TORBOX_API_TOKEN", "t")
+	t.Setenv("SAB2TORBOX_SAB_API_KEY", "k")
+	t.Setenv("SAB2TORBOX_WEBDAV_MOUNT_ROOT", dir)
+
+	t.Setenv("SAB2TORBOX_SYMLINK_ROOT", "/nonexistent/symlink/root/xyz")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for a missing symlink root")
+	}
+	t.Setenv("SAB2TORBOX_SYMLINK_ROOT", dir)
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load with a valid symlink root: %v", err)
+	}
+}
+
 func TestWebDAVRefreshEnabled(t *testing.T) {
 	if !(&Config{TorBoxWebDAVUser: "u", TorBoxWebDAVPass: "p"}).WebDAVRefreshEnabled() {
 		t.Error("should be enabled when both credentials are set")

@@ -131,7 +131,7 @@ func (w *Workers) reconcile(ctx context.Context, j *job.Job, rec torbox.UsenetDo
 	j.ETASeconds = rec.ETASeconds()
 
 	if rec.DownloadFinished && rec.DownloadPresent {
-		path, err := w.resolveStoragePath(ctx, rec.Name)
+		sourceDir, err := w.resolveStoragePath(ctx, rec.Name)
 		if err != nil {
 			log.Warn("waiting for webdav path", "error", err)
 			// Keep progress; retry on the next poll.
@@ -140,9 +140,21 @@ func (w *Workers) reconcile(ctx context.Context, j *job.Job, rec torbox.UsenetDo
 			}
 			return reconcileAwaitingWebDAV
 		}
+		storagePath := sourceDir
+		if w.cfg.SymlinkModeEnabled() {
+			farm, ferr := buildSymlinkFarm(w.cfg.SymlinkRoot, j.Category, rec.Name, sourceDir)
+			if ferr != nil {
+				log.Error("building symlink farm", "error", ferr)
+				if uerr := w.store.UpdateJob(ctx, j); uerr != nil {
+					log.Error("persisting progress", "error", uerr)
+				}
+				return reconcileAwaitingWebDAV
+			}
+			storagePath = farm
+		}
 		now := time.Now()
 		j.State = job.StateCompleted
-		j.StoragePath = path
+		j.StoragePath = storagePath
 		j.ProgressPct = 100
 		j.ETASeconds = 0
 		j.CompletedAt = &now
@@ -150,7 +162,7 @@ func (w *Workers) reconcile(ctx context.Context, j *job.Job, rec torbox.UsenetDo
 			log.Error("persisting completed state", "error", err)
 			return reconcileSettled
 		}
-		log.Info("job completed", "storage_path", path)
+		log.Info("job completed", "storage_path", storagePath)
 		return reconcileSettled
 	}
 
