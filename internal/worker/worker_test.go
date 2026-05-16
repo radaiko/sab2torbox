@@ -904,3 +904,46 @@ func TestEmitHealEventSkipsUnwantedAndUnconfigured(t *testing.T) {
 		// expected — nothing delivered
 	}
 }
+
+func TestHealerFiresFailedEvent(t *testing.T) {
+	received := make(chan webhookPayload, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var p webhookPayload
+		json.NewDecoder(r.Body).Decode(&p)
+		received <- p
+	}))
+	defer srv.Close()
+
+	fake := &fakeTorBox{createErr: &torbox.APIError{Status: 500, Detail: "down"}}
+	w, st, cfg := testWorkers(t, fake)
+	cfg.HealMaxAttempts = 3
+	cfg.HealWebhookURL = srv.URL
+	cfg.HealWebhookEvents = []string{"detected", "failed"}
+	ctx := context.Background()
+
+	id, _ := st.CreateJob(ctx, &job.Job{
+		State: job.StateImported, Category: "c", NZBName: "n", NZBContent: []byte("x"),
+	})
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{
+		JobID: id, SymlinkPath: "/lib/x.mkv", TargetPath: "/mnt/torbox/N/x.mkv",
+	})
+	syms, _ := st.ListImportedSymlinks(ctx)
+	st.SetSymlinkVerified(ctx, syms[0].ID, true, time.Now())
+
+	if err := w.triggerHeals(ctx); err != nil {
+		t.Fatalf("triggerHeals: %v", err)
+	}
+	// Expect a "detected" and a "failed" event (order not guaranteed).
+	seen := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case p := <-received:
+			seen[p.Event] = true
+		case <-time.After(2 * time.Second):
+			t.Fatalf("missing webhook events; got %v", seen)
+		}
+	}
+	if !seen["detected"] || !seen["failed"] {
+		t.Errorf("expected detected+failed events, got %v", seen)
+	}
+}

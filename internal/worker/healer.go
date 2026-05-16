@@ -107,6 +107,7 @@ func (w *Workers) finishHeal(ctx context.Context, j *job.Job, rec torbox.UsenetD
 		log.Error("heal: persisting healed job", "error", err)
 		return
 	}
+	w.emitHealEvent("healed", j, healEventExtra{SymlinksHealed: healed, NewTorBoxID: j.TorBoxID})
 	log.Info("heal: completed", "symlinks_healed", healed)
 }
 
@@ -275,6 +276,7 @@ func (w *Workers) triggerHeals(ctx context.Context) error {
 // startHeal resubmits a job's stored NZB to TorBox and moves it to `healing`.
 func (w *Workers) startHeal(ctx context.Context, j *job.Job, brokenCount int) {
 	log := w.logger.With("job_id", j.ID, "nzb_name", j.NZBName)
+	w.emitHealEvent("detected", j, healEventExtra{})
 	if len(j.NZBContent) == 0 && j.NZBURL == "" {
 		log.Error("heal: no stored NZB to resubmit")
 		w.markHealFailed(ctx, j, "no stored NZB content")
@@ -300,6 +302,7 @@ func (w *Workers) startHeal(ctx context.Context, j *job.Job, brokenCount int) {
 		w.markHealFailed(ctx, j, "persisting healing state failed: "+err.Error())
 		return
 	}
+	w.emitHealEvent("healing", j, healEventExtra{NewTorBoxID: j.TorBoxID})
 	log.Info("heal: resubmitted to torbox",
 		"torbox_id", j.TorBoxID, "broken_symlinks", brokenCount)
 }
@@ -315,6 +318,7 @@ func (w *Workers) markHealFailed(ctx context.Context, j *job.Job, msg string) {
 	if err := w.store.UpdateJob(ctx, j); err != nil {
 		w.logger.Error("heal: persisting heal_failed", "job_id", j.ID, "error", err)
 	}
+	w.emitHealEvent("failed", j, healEventExtra{Error: msg})
 }
 
 // healBackoff is exponential: HealBackoffInitial doubled once per prior attempt.
