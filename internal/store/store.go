@@ -73,30 +73,36 @@ func (s *Store) Exec(ctx context.Context, query string, args ...any) (sql.Result
 const jobColumns = `id, state, category, nzb_name, nzb_content, nzb_url,
 	nzb_sha256, torbox_id, torbox_hash, storage_path, total_bytes,
 	downloaded_bytes, progress_pct, fail_message, created_at, updated_at,
-	submitted_at, completed_at, eta_seconds`
+	submitted_at, completed_at, eta_seconds, heal_count, last_healed_at,
+	last_heal_error`
 
 // scanJob reads one job row in jobColumns order.
 func scanJob(row interface{ Scan(...any) error }) (*job.Job, error) {
 	var j job.Job
 	var (
-		nzbURL, nzbSHA, hash, storage, failMsg sql.NullString
-		torboxID                               sql.NullInt64
-		submitted, completed                   sql.NullTime
+		nzbURL, nzbSHA, hash, storage, failMsg, healError sql.NullString
+		torboxID                                          sql.NullInt64
+		submitted, completed, healedAt                    sql.NullTime
 	)
 	err := row.Scan(&j.ID, &j.State, &j.Category, &j.NZBName, &j.NZBContent,
 		&nzbURL, &nzbSHA, &torboxID, &hash, &storage, &j.TotalBytes,
 		&j.DownloadedBytes, &j.ProgressPct, &failMsg, &j.CreatedAt,
-		&j.UpdatedAt, &submitted, &completed, &j.ETASeconds)
+		&j.UpdatedAt, &submitted, &completed, &j.ETASeconds, &j.HealCount,
+		&healedAt, &healError)
 	if err != nil {
 		return nil, err
 	}
 	j.NZBURL, j.NZBSHA256, j.TorBoxHash = nzbURL.String, nzbSHA.String, hash.String
 	j.StoragePath, j.FailMessage, j.TorBoxID = storage.String, failMsg.String, torboxID.Int64
+	j.LastHealError = healError.String
 	if submitted.Valid {
 		j.SubmittedAt = &submitted.Time
 	}
 	if completed.Valid {
 		j.CompletedAt = &completed.Time
+	}
+	if healedAt.Valid {
+		j.LastHealedAt = &healedAt.Time
 	}
 	return &j, nil
 }
@@ -129,13 +135,15 @@ func (s *Store) UpdateJob(ctx context.Context, j *job.Job) error {
 		`UPDATE jobs SET state=?, category=?, nzb_name=?, nzb_content=?,
 		 nzb_url=?, nzb_sha256=?, torbox_id=?, torbox_hash=?, storage_path=?,
 		 total_bytes=?, downloaded_bytes=?, progress_pct=?, fail_message=?,
-		 updated_at=CURRENT_TIMESTAMP, submitted_at=?, completed_at=?, eta_seconds=?
+		 updated_at=CURRENT_TIMESTAMP, submitted_at=?, completed_at=?,
+		 eta_seconds=?, heal_count=?, last_healed_at=?, last_heal_error=?
 		 WHERE id=?`,
 		j.State, j.Category, j.NZBName, j.NZBContent, nullStr(j.NZBURL),
 		nullStr(j.NZBSHA256), nullInt(j.TorBoxID), nullStr(j.TorBoxHash),
 		nullStr(j.StoragePath), j.TotalBytes, j.DownloadedBytes, j.ProgressPct,
 		nullStr(j.FailMessage), nullTime(j.SubmittedAt), nullTime(j.CompletedAt),
-		j.ETASeconds, j.ID)
+		j.ETASeconds, j.HealCount, nullTime(j.LastHealedAt),
+		nullStr(j.LastHealError), j.ID)
 	if err != nil {
 		return fmt.Errorf("updating job %d: %w", j.ID, err)
 	}
@@ -235,6 +243,118 @@ func (s *Store) ReapImported(ctx context.Context, cutoff time.Time) (int64, erro
 		return 0, fmt.Errorf("reaping imported jobs: %w", err)
 	}
 	return res.RowsAffected()
+}
+
+// importedSymlinkColumns is the canonical column order for scanning.
+const importedSymlinkColumns = `id, job_id, symlink_path, target_path,
+	discovered_at, last_verified, is_broken`
+
+// UpsertImportedSymlink inserts a tracked symlink, or updates its job_id and
+// target if the same symlink_path is recorded again.
+func (s *Store) UpsertImportedSymlink(ctx context.Context, sym *job.ImportedSymlink) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO imported_symlinks (job_id, symlink_path, target_path)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(symlink_path) DO UPDATE SET
+		   job_id = excluded.job_id, target_path = excluded.target_path`,
+		sym.JobID, sym.SymlinkPath, sym.TargetPath)
+	if err != nil {
+		return fmt.Errorf("upserting imported symlink: %w", err)
+	}
+	return nil
+}
+
+// ListImportedSymlinks returns every tracked symlink.
+func (s *Store) ListImportedSymlinks(ctx context.Context) ([]*job.ImportedSymlink, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+importedSymlinkColumns+` FROM imported_symlinks ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing imported symlinks: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*job.ImportedSymlink
+	for rows.Next() {
+		var sym job.ImportedSymlink
+		var verified sql.NullTime
+		var broken int
+		if err := rows.Scan(&sym.ID, &sym.JobID, &sym.SymlinkPath, &sym.TargetPath,
+			&sym.DiscoveredAt, &verified, &broken); err != nil {
+			return nil, err
+		}
+		if verified.Valid {
+			sym.LastVerified = &verified.Time
+		}
+		sym.IsBroken = broken != 0
+		out = append(out, &sym)
+	}
+	return out, rows.Err()
+}
+
+// SetSymlinkVerified records a verification result for one tracked symlink.
+func (s *Store) SetSymlinkVerified(ctx context.Context, id int64, broken bool, at time.Time) error {
+	b := 0
+	if broken {
+		b = 1
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE imported_symlinks SET is_broken=?, last_verified=? WHERE id=?`,
+		b, at, id); err != nil {
+		return fmt.Errorf("setting symlink verified: %w", err)
+	}
+	return nil
+}
+
+// UpdateSymlinkTarget repoints a tracked symlink and clears its broken flag.
+func (s *Store) UpdateSymlinkTarget(ctx context.Context, id int64, target string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE imported_symlinks SET target_path=?, is_broken=0 WHERE id=?`,
+		target, id); err != nil {
+		return fmt.Errorf("updating symlink target: %w", err)
+	}
+	return nil
+}
+
+// DeleteImportedSymlink removes one tracked symlink row.
+func (s *Store) DeleteImportedSymlink(ctx context.Context, id int64) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM imported_symlinks WHERE id=?`, id); err != nil {
+		return fmt.Errorf("deleting imported symlink: %w", err)
+	}
+	return nil
+}
+
+// SymlinkCounts returns the total tracked symlinks and how many are broken.
+func (s *Store) SymlinkCounts(ctx context.Context) (tracked, broken int64, err error) {
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*), COALESCE(SUM(is_broken), 0) FROM imported_symlinks`).
+		Scan(&tracked, &broken)
+	if err != nil {
+		return 0, 0, fmt.Errorf("counting symlinks: %w", err)
+	}
+	return tracked, broken, nil
+}
+
+// CountJobsByState returns how many jobs are in any of the given states.
+func (s *Store) CountJobsByState(ctx context.Context, states ...job.State) (int64, error) {
+	if len(states) == 0 {
+		return 0, nil
+	}
+	placeholders := ""
+	args := make([]any, len(states))
+	for i, st := range states {
+		if i > 0 {
+			placeholders += ","
+		}
+		placeholders += "?"
+		args[i] = st
+	}
+	var n int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM jobs WHERE state IN (`+placeholders+`)`, args...).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("counting jobs by state: %w", err)
+	}
+	return n, nil
 }
 
 func nullStr(s string) any {

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/radaiko/sab2torbox/internal/config"
 	"github.com/radaiko/sab2torbox/internal/job"
@@ -293,4 +294,34 @@ func (f *fakeHealth) Check(context.Context) error {
 		return nil
 	}
 	return io.EOF
+}
+
+// fakeHealReporter is a canned HealReporter.
+type fakeHealReporter struct{ last, next time.Time }
+
+func (f fakeHealReporter) HealRunInfo() (time.Time, time.Time) { return f.last, f.next }
+
+func TestHealthSymlinks(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	jobID, _ := st.CreateJob(ctx, &job.Job{State: job.StateHealing, Category: "c", NZBName: "n"})
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{
+		JobID: jobID, SymlinkPath: "/lib/a.mkv", TargetPath: "/mnt/torbox/N/a.mkv",
+	})
+	syms, _ := st.ListImportedSymlinks(ctx)
+	st.SetSymlinkVerified(ctx, syms[0].ID, true, time.Now())
+	srv.SetHealReporter(fakeHealReporter{last: time.Now()})
+
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/symlinks", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	var resp SymlinkHealthResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	if resp.Tracked != 1 || resp.Broken != 1 || resp.Healing != 1 {
+		t.Errorf("counts wrong: %+v", resp)
+	}
 }

@@ -57,6 +57,7 @@ func run() error {
 	workers := worker.New(st, tb, cfg, logger)
 	srv := api.NewServer(st, cfg, logger)
 	srv.SetHealth(api.NewHealth(st, tb, 5*time.Minute))
+	srv.SetHealReporter(workers)
 
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,

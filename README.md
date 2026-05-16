@@ -198,6 +198,64 @@ To stay a good citizen of a deliberately rate-limited endpoint, the refresh:
 
 Leave the credentials unset to disable the feature entirely.
 
+## Auto-healing rotated releases
+
+TorBox rotates releases out of its storage after roughly 30 days to reclaim
+space. When that happens, the symlink your library holds — the one Sonarr moved
+into the `tv/Show/...` folder — still points at the old release folder on the
+WebDAV mount, but that folder is now gone. Plex/Jellyfin follows the symlink,
+finds nothing, and shows the item as "Unplayable". Sonarr itself never sees
+a missing state because its import already succeeded.
+
+With `SAB2TORBOX_HEAL_ENABLED=true` and `SAB2TORBOX_HEAL_LIBRARY_ROOTS` set to
+the comma-separated Sonarr/Radarr library roots (e.g.
+`/mnt/smedia/tv,/mnt/smedia/movies`), an hourly healer:
+
+1. **Walks** every configured library root and records any symlink whose target
+   sits inside `WEBDAV_MOUNT_ROOT` and maps to a known job.
+2. **Detects** broken symlinks — ones whose target has disappeared from the
+   WebDAV mount — and flags them.
+3. **Resubmits** the original stored NZB to TorBox for each affected job.
+   TorBox usually recognises the file as a cache hit and makes it available
+   within seconds, so no new download is needed.
+4. **Atomically repoints** each flagged symlink at the new release folder once
+   TorBox signals completion. The rename is POSIX-atomic, so any process with
+   the file open continues reading without interruption. Sonarr never sees the
+   file as missing.
+
+### Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `SAB2TORBOX_HEAL_ENABLED` | `false` | Master switch; set to `true` to enable the healer |
+| `SAB2TORBOX_HEAL_INTERVAL` | `1h` | How often the healer walks the library roots |
+| `SAB2TORBOX_HEAL_LIBRARY_ROOTS` | _(required when enabled)_ | Comma-separated absolute paths to walk (your Sonarr/Radarr library roots) |
+| `SAB2TORBOX_HEAL_DRY_RUN` | `false` | Detect and log broken symlinks but never modify anything |
+| `SAB2TORBOX_HEAL_MAX_ATTEMPTS` | `3` | Give up healing a job after this many consecutive failures |
+| `SAB2TORBOX_HEAL_BACKOFF_INITIAL` | `5m` | Exponential backoff base between failed heal attempts |
+
+### Storage cost of keeping NZB content
+
+sab2torbox keeps the raw NZB file (the heal seed) for each job's entire
+lifetime — it is needed to resubmit to TorBox. NZBs are typically tens of
+kilobytes; 10,000 jobs add up to roughly 30 MB of database storage, which is
+negligible.
+
+### Monitoring
+
+`GET /health/symlinks` returns a JSON object with the current healer state:
+
+```json
+{
+  "tracked":    42,
+  "broken":      1,
+  "healing":     1,
+  "heal_failed": 0,
+  "last_run":  "2026-05-16T03:00:00Z",
+  "next_run":  "2026-05-16T04:00:00Z"
+}
+```
+
 ## Troubleshooting
 
 **Files don't appear after a download completes.**
@@ -236,6 +294,21 @@ existing job ID instead of submitting twice.
 **`/healthz` returns 503.**
 The database is unreachable or the TorBox token is invalid/expired. The TorBox
 check is cached for 5 minutes.
+
+**Heal is not running.**
+Check `SAB2TORBOX_HEAL_ENABLED=true` and that `SAB2TORBOX_HEAL_LIBRARY_ROOTS`
+lists every Sonarr/Radarr library root. The service fails to start if
+HEAL_ENABLED is set without valid HEAL_LIBRARY_ROOTS.
+
+**Heal keeps failing for one release.**
+After `HEAL_MAX_ATTEMPTS` the healer gives up on that job. The NZB may have
+aged off Usenet so TorBox can no longer fetch it — delete the item in Sonarr
+and let it re-search for a different release.
+
+**A broken symlink isn't being healed.**
+The healer only tracks symlinks whose target is under `WEBDAV_MOUNT_ROOT` and
+that sit inside a `HEAL_LIBRARY_ROOTS` path. Confirm those roots cover every
+library folder; the hourly re-walk then picks the symlink up.
 
 ## Compared to TorBoxarr and Decypharr
 

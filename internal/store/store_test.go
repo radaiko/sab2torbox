@@ -144,3 +144,81 @@ func TestReapImported(t *testing.T) {
 		t.Fatalf("ReapImported: n=%d err=%v", n, err)
 	}
 }
+
+func TestHealColumnsRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	id, _ := s.CreateJob(ctx, &job.Job{State: job.StateImported, Category: "c", NZBName: "n"})
+	j, _ := s.GetJob(ctx, id)
+	now := time.Now().UTC().Truncate(time.Second)
+	j.HealCount = 2
+	j.LastHealedAt = &now
+	j.LastHealError = "boom"
+	if err := s.UpdateJob(ctx, j); err != nil {
+		t.Fatalf("UpdateJob: %v", err)
+	}
+	got, _ := s.GetJob(ctx, id)
+	if got.HealCount != 2 || got.LastHealError != "boom" || got.LastHealedAt == nil {
+		t.Errorf("heal columns not persisted: %+v", got)
+	}
+}
+
+func TestImportedSymlinkCRUD(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	jobID, _ := s.CreateJob(ctx, &job.Job{State: job.StateImported, Category: "c", NZBName: "n"})
+
+	sym := &job.ImportedSymlink{JobID: jobID, SymlinkPath: "/lib/a.mkv", TargetPath: "/mnt/torbox/Rel/a.mkv"}
+	if err := s.UpsertImportedSymlink(ctx, sym); err != nil {
+		t.Fatalf("UpsertImportedSymlink: %v", err)
+	}
+	// Upsert again with a new target — must update, not duplicate.
+	sym.TargetPath = "/mnt/torbox/Rel2/a.mkv"
+	if err := s.UpsertImportedSymlink(ctx, sym); err != nil {
+		t.Fatalf("UpsertImportedSymlink (update): %v", err)
+	}
+	list, err := s.ListImportedSymlinks(ctx)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("ListImportedSymlinks: len=%d err=%v", len(list), err)
+	}
+	if list[0].TargetPath != "/mnt/torbox/Rel2/a.mkv" {
+		t.Errorf("target not updated: %q", list[0].TargetPath)
+	}
+
+	id := list[0].ID
+	if err := s.SetSymlinkVerified(ctx, id, true, time.Now()); err != nil {
+		t.Fatalf("SetSymlinkVerified: %v", err)
+	}
+	if list, _ = s.ListImportedSymlinks(ctx); !list[0].IsBroken {
+		t.Error("symlink should be marked broken")
+	}
+	if err := s.UpdateSymlinkTarget(ctx, id, "/mnt/torbox/Rel3/a.mkv"); err != nil {
+		t.Fatalf("UpdateSymlinkTarget: %v", err)
+	}
+	if list, _ = s.ListImportedSymlinks(ctx); list[0].IsBroken || list[0].TargetPath != "/mnt/torbox/Rel3/a.mkv" {
+		t.Errorf("UpdateSymlinkTarget should clear is_broken and set target: %+v", list[0])
+	}
+
+	tracked, broken, err := s.SymlinkCounts(ctx)
+	if err != nil || tracked != 1 || broken != 0 {
+		t.Errorf("SymlinkCounts: tracked=%d broken=%d err=%v", tracked, broken, err)
+	}
+	if err := s.DeleteImportedSymlink(ctx, id); err != nil {
+		t.Fatalf("DeleteImportedSymlink: %v", err)
+	}
+	if list, _ = s.ListImportedSymlinks(ctx); len(list) != 0 {
+		t.Error("symlink row should be deleted")
+	}
+}
+
+func TestCountJobsByState(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	s.CreateJob(ctx, &job.Job{State: job.StateHealing, Category: "c", NZBName: "a"})
+	s.CreateJob(ctx, &job.Job{State: job.StateHealing, Category: "c", NZBName: "b"})
+	s.CreateJob(ctx, &job.Job{State: job.StateHealFailed, Category: "c", NZBName: "d"})
+	n, err := s.CountJobsByState(ctx, job.StateHealing)
+	if err != nil || n != 2 {
+		t.Errorf("CountJobsByState healing: n=%d err=%v", n, err)
+	}
+}

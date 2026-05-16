@@ -553,6 +553,23 @@ func TestPollerSkipsRefreshWhileDownloadOngoing(t *testing.T) {
 	}
 }
 
+func TestSubmitterKeepsNZBContent(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, _ := testWorkers(t, fake)
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{
+		State: job.StatePending, Category: "sonarr", NZBName: "Rel",
+		NZBContent: []byte("<nzb/>"),
+	})
+	if err := w.submitOnce(ctx); err != nil {
+		t.Fatalf("submitOnce: %v", err)
+	}
+	got, _ := st.GetJob(ctx, id)
+	if len(got.NZBContent) == 0 {
+		t.Error("nzb_content must be kept after submission (heal seed)")
+	}
+}
+
 func TestPollerWebDAVRefreshBacksOffOn429(t *testing.T) {
 	var hits atomic.Int32
 	srv := webdavRefreshServer(t, &hits, http.StatusTooManyRequests)
@@ -579,5 +596,217 @@ func TestPollerWebDAVRefreshBacksOffOn429(t *testing.T) {
 	w.pollOnce(ctx) // blocked by the backoff despite the tiny cooldown
 	if hits.Load() != 1 {
 		t.Errorf("429 should trigger backoff; got %d refresh attempts", hits.Load())
+	}
+}
+
+func TestHealRunInfoZeroBeforeFirstRun(t *testing.T) {
+	w, _, _ := testWorkers(t, &fakeTorBox{})
+	last, next := w.HealRunInfo()
+	if !last.IsZero() || !next.IsZero() {
+		t.Errorf("expected zero times before the first heal run, got %v / %v", last, next)
+	}
+}
+
+func TestHealerDetectsBrokenSymlinks(t *testing.T) {
+	w, st, _ := testWorkers(t, &fakeTorBox{})
+	ctx := context.Background()
+	jobID, _ := st.CreateJob(ctx, &job.Job{State: job.StateImported, Category: "c", NZBName: "n"})
+
+	// A live symlink and a broken one.
+	src := t.TempDir()
+	good := filepath.Join(src, "good.mkv")
+	os.WriteFile(good, []byte("x"), 0o644)
+	lib := t.TempDir()
+	liveLink := filepath.Join(lib, "live.mkv")
+	os.Symlink(good, liveLink)
+	brokenLink := filepath.Join(lib, "broken.mkv")
+	os.Symlink(filepath.Join(src, "gone.mkv"), brokenLink)
+	goneLink := filepath.Join(lib, "gone-entirely.mkv")
+	os.Symlink(good, goneLink)
+
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{JobID: jobID, SymlinkPath: liveLink, TargetPath: good})
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{JobID: jobID, SymlinkPath: brokenLink, TargetPath: filepath.Join(src, "gone.mkv")})
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{JobID: jobID, SymlinkPath: goneLink, TargetPath: good})
+	os.Remove(goneLink) // the symlink itself disappears
+
+	if err := w.detectBrokenSymlinks(ctx); err != nil {
+		t.Fatalf("detectBrokenSymlinks: %v", err)
+	}
+	syms, _ := st.ListImportedSymlinks(ctx)
+	got := map[string]bool{}
+	for _, s := range syms {
+		got[filepath.Base(s.SymlinkPath)] = s.IsBroken
+	}
+	if len(syms) != 2 {
+		t.Fatalf("the vanished symlink row should be deleted; got %d rows", len(syms))
+	}
+	if got["live.mkv"] {
+		t.Error("live symlink wrongly marked broken")
+	}
+	if !got["broken.mkv"] {
+		t.Error("broken symlink not marked broken")
+	}
+}
+
+func TestHealerDiscoversLibrarySymlinks(t *testing.T) {
+	w, st, cfg := testWorkers(t, &fakeTorBox{})
+	libRoot := t.TempDir()
+	cfg.HealLibraryRoots = []string{libRoot}
+	ctx := context.Background()
+
+	// A completed job whose release folder is "Rel.A".
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateImported, Category: "sonarr", NZBName: "Rel.A"})
+	j, _ := st.GetJob(ctx, id)
+	j.StoragePath = filepath.Join(cfg.SymlinkRoot, "sonarr", "Rel.A")
+	st.UpdateJob(ctx, j)
+
+	// A library symlink pointing into the WebDAV mount for that release.
+	target := filepath.Join(cfg.WebDAVMountRoot, "Rel.A", "ep.mkv")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(target, []byte("v"), 0o644)
+	link := filepath.Join(libRoot, "Show", "ep.mkv")
+	os.MkdirAll(filepath.Dir(link), 0o755)
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink pointing somewhere else entirely — must be ignored.
+	other := filepath.Join(t.TempDir(), "elsewhere.mkv")
+	os.WriteFile(other, []byte("x"), 0o644)
+	os.Symlink(other, filepath.Join(libRoot, "Show", "other.mkv"))
+
+	if err := w.discoverSymlinks(ctx); err != nil {
+		t.Fatalf("discoverSymlinks: %v", err)
+	}
+	syms, _ := st.ListImportedSymlinks(ctx)
+	if len(syms) != 1 {
+		t.Fatalf("expected 1 tracked symlink, got %d", len(syms))
+	}
+	if syms[0].SymlinkPath != link || syms[0].JobID != id {
+		t.Errorf("bad tracked symlink: %+v", syms[0])
+	}
+}
+
+func TestHealerTriggersResubmission(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, cfg := testWorkers(t, fake)
+	cfg.HealMaxAttempts = 3
+	cfg.HealBackoffInitial = time.Minute
+	ctx := context.Background()
+
+	id, _ := st.CreateJob(ctx, &job.Job{
+		State: job.StateImported, Category: "sonarr", NZBName: "Rel",
+		NZBContent: []byte("<nzb/>"),
+	})
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{
+		JobID: id, SymlinkPath: "/lib/ep.mkv", TargetPath: "/mnt/torbox/Rel/ep.mkv",
+	})
+	syms, _ := st.ListImportedSymlinks(ctx)
+	st.SetSymlinkVerified(ctx, syms[0].ID, true, time.Now())
+
+	if err := w.triggerHeals(ctx); err != nil {
+		t.Fatalf("triggerHeals: %v", err)
+	}
+	got, _ := st.GetJob(ctx, id)
+	if got.State != job.StateHealing {
+		t.Errorf("state: got %s want healing", got.State)
+	}
+	if got.TorBoxID == 0 {
+		t.Error("a new torbox id should be recorded")
+	}
+	if len(fake.created) != 1 {
+		t.Errorf("expected 1 resubmission, got %d", len(fake.created))
+	}
+}
+
+func TestHealerSkipsExhaustedJobs(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, cfg := testWorkers(t, fake)
+	cfg.HealMaxAttempts = 2
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{
+		State: job.StateHealFailed, Category: "c", NZBName: "n", NZBContent: []byte("x"),
+	})
+	j, _ := st.GetJob(ctx, id)
+	j.HealCount = 2 // already at the limit
+	st.UpdateJob(ctx, j)
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{JobID: id, SymlinkPath: "/lib/x.mkv", TargetPath: "/mnt/torbox/N/x.mkv"})
+	syms, _ := st.ListImportedSymlinks(ctx)
+	st.SetSymlinkVerified(ctx, syms[0].ID, true, time.Now())
+
+	if err := w.triggerHeals(ctx); err != nil {
+		t.Fatalf("triggerHeals: %v", err)
+	}
+	if len(fake.created) != 0 {
+		t.Error("a job at HealMaxAttempts must not be resubmitted")
+	}
+}
+
+func TestHealReconcileFinishesHeal(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, cfg := testWorkers(t, fake)
+	shortPathRetry(t)
+	ctx := context.Background()
+
+	// New release folder on the WebDAV mount (under the usenet subpath).
+	newRel := "Rel.Healed"
+	newDir := filepath.Join(cfg.UsenetPath(), newRel)
+	os.MkdirAll(newDir, 0o755)
+	os.WriteFile(filepath.Join(newDir, "ep.mkv"), []byte("v"), 0o644)
+
+	// A job in `healing` with a broken library symlink.
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateHealing, Category: "sonarr", NZBName: newRel})
+	j, _ := st.GetJob(ctx, id)
+	j.TorBoxID = 700
+	j.StoragePath = filepath.Join(cfg.SymlinkRoot, "sonarr", "Rel.Old")
+	st.UpdateJob(ctx, j)
+
+	lib := t.TempDir()
+	link := filepath.Join(lib, "ep.mkv")
+	os.Symlink(filepath.Join(cfg.UsenetPath(), "Rel.Old", "ep.mkv"), link)
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{
+		JobID: id, SymlinkPath: link,
+		TargetPath: filepath.Join(cfg.UsenetPath(), "Rel.Old", "ep.mkv"),
+	})
+	syms, _ := st.ListImportedSymlinks(ctx)
+	st.SetSymlinkVerified(ctx, syms[0].ID, true, time.Now())
+
+	fake.list = []torbox.UsenetDownload{{
+		ID: 700, Name: newRel, Progress: 1,
+		DownloadFinished: true, DownloadPresent: true,
+	}}
+	if err := w.healReconcileOnce(ctx); err != nil {
+		t.Fatalf("healReconcileOnce: %v", err)
+	}
+	got, _ := st.GetJob(ctx, id)
+	if got.State != job.StateImported {
+		t.Fatalf("state: got %s want imported", got.State)
+	}
+	if got.HealCount != 1 {
+		t.Errorf("heal_count: got %d want 1", got.HealCount)
+	}
+	target, _ := os.Readlink(link)
+	want := filepath.Join(newDir, "ep.mkv")
+	if target != want {
+		t.Errorf("symlink not repointed: got %q want %q", target, want)
+	}
+}
+
+func TestHealReconcileMarksFailedDownload(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, _ := testWorkers(t, fake)
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateHealing, Category: "c", NZBName: "n"})
+	j, _ := st.GetJob(ctx, id)
+	j.TorBoxID = 701
+	st.UpdateJob(ctx, j)
+	fake.list = []torbox.UsenetDownload{{ID: 701, DownloadState: "failed (dead)"}}
+	if err := w.healReconcileOnce(ctx); err != nil {
+		t.Fatalf("healReconcileOnce: %v", err)
+	}
+	got, _ := st.GetJob(ctx, id)
+	if got.State != job.StateHealFailed {
+		t.Errorf("state: got %s want heal_failed", got.State)
 	}
 }

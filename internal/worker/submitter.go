@@ -68,7 +68,6 @@ func (w *Workers) submitJob(ctx context.Context, j *job.Job) {
 	j.State = job.StateQueued
 	j.TorBoxID = int64(result.UsenetDownloadID)
 	j.TorBoxHash = result.Hash
-	j.NZBContent = nil // free the blob; TorBox owns it now
 	j.SubmittedAt = &now
 	if err := w.store.UpdateJob(ctx, j); err != nil {
 		log.Error("marking job queued", "error", err)

@@ -128,3 +128,70 @@ func TestIsWithin(t *testing.T) {
 		t.Error("/a/x is not within /a/b")
 	}
 }
+
+func TestAtomicReplaceSymlink(t *testing.T) {
+	dir := t.TempDir()
+	oldTarget := filepath.Join(dir, "old.mkv")
+	newTarget := filepath.Join(dir, "new.mkv")
+	if err := os.WriteFile(oldTarget, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newTarget, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.mkv")
+	if err := os.Symlink(oldTarget, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicReplaceSymlink(link, newTarget); err != nil {
+		t.Fatalf("atomicReplaceSymlink: %v", err)
+	}
+	got, _ := os.Readlink(link)
+	if got != newTarget {
+		t.Errorf("link target: got %q want %q", got, newTarget)
+	}
+	if b, _ := os.ReadFile(link); string(b) != "new" {
+		t.Errorf("content through link: %q", b)
+	}
+}
+
+func TestLCP(t *testing.T) {
+	if lcp("abcdef", "abcxyz") != 3 {
+		t.Errorf("lcp = %d, want 3", lcp("abcdef", "abcxyz"))
+	}
+	if lcp("", "x") != 0 {
+		t.Error("lcp with empty string must be 0")
+	}
+}
+
+func TestFindBestMatch(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"the.rookie.s08e01.GERMAN.mkv", "sample.mkv", "info.nfo"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Case-insensitive prefix match wins over the unrelated sample.
+	got, err := findBestMatch(dir, "The.Rookie.S08E01.german.mkv")
+	if err != nil {
+		t.Fatalf("findBestMatch: %v", err)
+	}
+	if filepath.Base(got) != "the.rookie.s08e01.GERMAN.mkv" {
+		t.Errorf("match: got %q", got)
+	}
+
+	// Single video file fallback.
+	solo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(solo, "totally.different.name.mkv"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := findBestMatch(solo, "original.mkv"); err != nil {
+		t.Errorf("single-video fallback should match: %v", err)
+	}
+
+	// No plausible match -> error.
+	empty := t.TempDir()
+	if _, err := findBestMatch(empty, "x.mkv"); err == nil {
+		t.Error("expected error when nothing matches")
+	}
+}
