@@ -144,3 +144,21 @@ func TestReapImported(t *testing.T) {
 		t.Fatalf("ReapImported: n=%d err=%v", n, err)
 	}
 }
+
+func TestHealColumnsRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	id, _ := s.CreateJob(ctx, &job.Job{State: job.StateImported, Category: "c", NZBName: "n"})
+	j, _ := s.GetJob(ctx, id)
+	now := time.Now().UTC().Truncate(time.Second)
+	j.HealCount = 2
+	j.LastHealedAt = &now
+	j.LastHealError = "boom"
+	if err := s.UpdateJob(ctx, j); err != nil {
+		t.Fatalf("UpdateJob: %v", err)
+	}
+	got, _ := s.GetJob(ctx, id)
+	if got.HealCount != 2 || got.LastHealError != "boom" || got.LastHealedAt == nil {
+		t.Errorf("heal columns not persisted: %+v", got)
+	}
+}

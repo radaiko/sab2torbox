@@ -73,30 +73,36 @@ func (s *Store) Exec(ctx context.Context, query string, args ...any) (sql.Result
 const jobColumns = `id, state, category, nzb_name, nzb_content, nzb_url,
 	nzb_sha256, torbox_id, torbox_hash, storage_path, total_bytes,
 	downloaded_bytes, progress_pct, fail_message, created_at, updated_at,
-	submitted_at, completed_at, eta_seconds`
+	submitted_at, completed_at, eta_seconds, heal_count, last_healed_at,
+	last_heal_error`
 
 // scanJob reads one job row in jobColumns order.
 func scanJob(row interface{ Scan(...any) error }) (*job.Job, error) {
 	var j job.Job
 	var (
-		nzbURL, nzbSHA, hash, storage, failMsg sql.NullString
-		torboxID                               sql.NullInt64
-		submitted, completed                   sql.NullTime
+		nzbURL, nzbSHA, hash, storage, failMsg, healError sql.NullString
+		torboxID                                          sql.NullInt64
+		submitted, completed, healedAt                    sql.NullTime
 	)
 	err := row.Scan(&j.ID, &j.State, &j.Category, &j.NZBName, &j.NZBContent,
 		&nzbURL, &nzbSHA, &torboxID, &hash, &storage, &j.TotalBytes,
 		&j.DownloadedBytes, &j.ProgressPct, &failMsg, &j.CreatedAt,
-		&j.UpdatedAt, &submitted, &completed, &j.ETASeconds)
+		&j.UpdatedAt, &submitted, &completed, &j.ETASeconds, &j.HealCount,
+		&healedAt, &healError)
 	if err != nil {
 		return nil, err
 	}
 	j.NZBURL, j.NZBSHA256, j.TorBoxHash = nzbURL.String, nzbSHA.String, hash.String
 	j.StoragePath, j.FailMessage, j.TorBoxID = storage.String, failMsg.String, torboxID.Int64
+	j.LastHealError = healError.String
 	if submitted.Valid {
 		j.SubmittedAt = &submitted.Time
 	}
 	if completed.Valid {
 		j.CompletedAt = &completed.Time
+	}
+	if healedAt.Valid {
+		j.LastHealedAt = &healedAt.Time
 	}
 	return &j, nil
 }
@@ -129,13 +135,15 @@ func (s *Store) UpdateJob(ctx context.Context, j *job.Job) error {
 		`UPDATE jobs SET state=?, category=?, nzb_name=?, nzb_content=?,
 		 nzb_url=?, nzb_sha256=?, torbox_id=?, torbox_hash=?, storage_path=?,
 		 total_bytes=?, downloaded_bytes=?, progress_pct=?, fail_message=?,
-		 updated_at=CURRENT_TIMESTAMP, submitted_at=?, completed_at=?, eta_seconds=?
+		 updated_at=CURRENT_TIMESTAMP, submitted_at=?, completed_at=?,
+		 eta_seconds=?, heal_count=?, last_healed_at=?, last_heal_error=?
 		 WHERE id=?`,
 		j.State, j.Category, j.NZBName, j.NZBContent, nullStr(j.NZBURL),
 		nullStr(j.NZBSHA256), nullInt(j.TorBoxID), nullStr(j.TorBoxHash),
 		nullStr(j.StoragePath), j.TotalBytes, j.DownloadedBytes, j.ProgressPct,
 		nullStr(j.FailMessage), nullTime(j.SubmittedAt), nullTime(j.CompletedAt),
-		j.ETASeconds, j.ID)
+		j.ETASeconds, j.HealCount, nullTime(j.LastHealedAt),
+		nullStr(j.LastHealError), j.ID)
 	if err != nil {
 		return fmt.Errorf("updating job %d: %w", j.ID, err)
 	}
