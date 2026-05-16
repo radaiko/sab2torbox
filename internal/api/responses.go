@@ -3,6 +3,7 @@
 package api
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/radaiko/sab2torbox/internal/job"
@@ -124,8 +125,25 @@ func queueSlotFromJob(j *job.Job) QueueSlot {
 		MB:         strconv.FormatFloat(totalMB, 'f', 1, 64),
 		MBLeft:     strconv.FormatFloat(leftMB, 'f', 1, 64),
 		Percentage: strconv.Itoa(j.ProgressPct),
-		TimeLeft:   "0:00:00",
+		TimeLeft:   formatTimeLeft(j.ETASeconds),
 	}
+}
+
+// formatTimeLeft renders seconds-remaining as the SABnzbd timeleft string
+// (`H:MM:SS`, or `D:HH:MM:SS` once it exceeds a day). Sonarr parses this into
+// the queue's estimated completion time.
+func formatTimeLeft(seconds int64) string {
+	if seconds <= 0 {
+		return "0:00:00"
+	}
+	d := seconds / 86400
+	h := (seconds % 86400) / 3600
+	m := (seconds % 3600) / 60
+	s := seconds % 60
+	if d > 0 {
+		return fmt.Sprintf("%d:%02d:%02d:%02d", d, h, m, s)
+	}
+	return fmt.Sprintf("%d:%02d:%02d", h, m, s)
 }
 
 // historySlotFromJob renders a finished job as a SAB history slot.

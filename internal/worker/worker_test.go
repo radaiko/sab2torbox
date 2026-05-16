@@ -119,7 +119,7 @@ func TestPollerProgressUpdate(t *testing.T) {
 
 	fake.list = []torbox.UsenetDownload{{
 		ID: 100, Name: "Rel", Size: 2000, Progress: 0.5,
-		DownloadState: "downloading",
+		DownloadState: "downloading", ETA: 120,
 	}}
 	if err := w.pollOnce(ctx); err != nil {
 		t.Fatalf("pollOnce: %v", err)
@@ -127,6 +127,9 @@ func TestPollerProgressUpdate(t *testing.T) {
 	got, _ := st.GetJob(ctx, id)
 	if got.State != job.StateDownloading || got.ProgressPct != 50 {
 		t.Errorf("got state=%s pct=%d", got.State, got.ProgressPct)
+	}
+	if got.ETASeconds != 120 {
+		t.Errorf("eta not propagated: got %d want 120", got.ETASeconds)
 	}
 }
 

@@ -60,6 +60,7 @@ type Job struct {
 	TotalBytes      int64
 	DownloadedBytes int64
 	ProgressPct     int
+	ETASeconds      int64
 	FailMessage     string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time

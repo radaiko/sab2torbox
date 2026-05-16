@@ -73,7 +73,7 @@ func (s *Store) Exec(ctx context.Context, query string, args ...any) (sql.Result
 const jobColumns = `id, state, category, nzb_name, nzb_content, nzb_url,
 	nzb_sha256, torbox_id, torbox_hash, storage_path, total_bytes,
 	downloaded_bytes, progress_pct, fail_message, created_at, updated_at,
-	submitted_at, completed_at`
+	submitted_at, completed_at, eta_seconds`
 
 // scanJob reads one job row in jobColumns order.
 func scanJob(row interface{ Scan(...any) error }) (*job.Job, error) {
@@ -86,7 +86,7 @@ func scanJob(row interface{ Scan(...any) error }) (*job.Job, error) {
 	err := row.Scan(&j.ID, &j.State, &j.Category, &j.NZBName, &j.NZBContent,
 		&nzbURL, &nzbSHA, &torboxID, &hash, &storage, &j.TotalBytes,
 		&j.DownloadedBytes, &j.ProgressPct, &failMsg, &j.CreatedAt,
-		&j.UpdatedAt, &submitted, &completed)
+		&j.UpdatedAt, &submitted, &completed, &j.ETASeconds)
 	if err != nil {
 		return nil, err
 	}
@@ -129,12 +129,13 @@ func (s *Store) UpdateJob(ctx context.Context, j *job.Job) error {
 		`UPDATE jobs SET state=?, category=?, nzb_name=?, nzb_content=?,
 		 nzb_url=?, nzb_sha256=?, torbox_id=?, torbox_hash=?, storage_path=?,
 		 total_bytes=?, downloaded_bytes=?, progress_pct=?, fail_message=?,
-		 updated_at=CURRENT_TIMESTAMP, submitted_at=?, completed_at=?
+		 updated_at=CURRENT_TIMESTAMP, submitted_at=?, completed_at=?, eta_seconds=?
 		 WHERE id=?`,
 		j.State, j.Category, j.NZBName, j.NZBContent, nullStr(j.NZBURL),
 		nullStr(j.NZBSHA256), nullInt(j.TorBoxID), nullStr(j.TorBoxHash),
 		nullStr(j.StoragePath), j.TotalBytes, j.DownloadedBytes, j.ProgressPct,
-		nullStr(j.FailMessage), nullTime(j.SubmittedAt), nullTime(j.CompletedAt), j.ID)
+		nullStr(j.FailMessage), nullTime(j.SubmittedAt), nullTime(j.CompletedAt),
+		j.ETASeconds, j.ID)
 	if err != nil {
 		return fmt.Errorf("updating job %d: %w", j.ID, err)
 	}

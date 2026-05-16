@@ -57,12 +57,16 @@ func TestUpdateJob(t *testing.T) {
 	j.State = job.StateQueued
 	j.TorBoxID = 99
 	j.ProgressPct = 50
+	j.ETASeconds = 300
 	if err := s.UpdateJob(ctx, j); err != nil {
 		t.Fatalf("UpdateJob: %v", err)
 	}
 	got, _ := s.GetJob(ctx, id)
 	if got.State != job.StateQueued || got.TorBoxID != 99 || got.ProgressPct != 50 {
 		t.Errorf("update not persisted: %+v", got)
+	}
+	if got.ETASeconds != 300 {
+		t.Errorf("eta_seconds not persisted: got %d", got.ETASeconds)
 	}
 }
 

@@ -90,3 +90,15 @@ func TestProgressPctAndFailed(t *testing.T) {
 		t.Error("completed should not report Failed")
 	}
 }
+
+func TestETASeconds(t *testing.T) {
+	if got := (UsenetDownload{ETA: 95.7}).ETASeconds(); got != 95 {
+		t.Errorf("ETASeconds(95.7): got %d want 95", got)
+	}
+	if got := (UsenetDownload{ETA: -1}).ETASeconds(); got != 0 {
+		t.Errorf("ETASeconds(-1): got %d want 0", got)
+	}
+	if got := (UsenetDownload{ETA: 0}).ETASeconds(); got != 0 {
+		t.Errorf("ETASeconds(0): got %d want 0", got)
+	}
+}

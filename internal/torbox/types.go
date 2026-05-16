@@ -115,6 +115,14 @@ func (d UsenetDownload) Failed() bool {
 		strings.Contains(s, "stalled")
 }
 
+// ETASeconds returns TorBox's estimated seconds remaining, clamped to >= 0.
+func (d UsenetDownload) ETASeconds() int64 {
+	if d.ETA <= 0 {
+		return 0
+	}
+	return int64(d.ETA)
+}
+
 // DownloadedBytes estimates transferred bytes from progress and total size.
 func (d UsenetDownload) DownloadedBytes() int64 {
 	if d.Size <= 0 {

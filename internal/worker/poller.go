@@ -101,6 +101,7 @@ func (w *Workers) reconcile(ctx context.Context, j *job.Job, rec torbox.UsenetDo
 	j.TotalBytes = rec.Size
 	j.DownloadedBytes = rec.DownloadedBytes()
 	j.ProgressPct = rec.ProgressPct()
+	j.ETASeconds = rec.ETASeconds()
 
 	if rec.DownloadFinished && rec.DownloadPresent {
 		path, err := w.resolveStoragePath(ctx, rec.Name)
@@ -116,6 +117,7 @@ func (w *Workers) reconcile(ctx context.Context, j *job.Job, rec torbox.UsenetDo
 		j.State = job.StateCompleted
 		j.StoragePath = path
 		j.ProgressPct = 100
+		j.ETASeconds = 0
 		j.CompletedAt = &now
 		if err := w.store.UpdateJob(ctx, j); err != nil {
 			log.Error("persisting completed state", "error", err)

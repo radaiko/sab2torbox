@@ -12,7 +12,7 @@ func TestQueueSlotFromJob(t *testing.T) {
 	j := &job.Job{
 		ID: 42, State: job.StateDownloading, Category: "sonarr",
 		NZBName: "Show.S01E01", TotalBytes: 2 << 30, DownloadedBytes: 1 << 30,
-		ProgressPct: 50,
+		ProgressPct: 50, ETASeconds: 150,
 	}
 	slot := queueSlotFromJob(j)
 	if slot.NzoID != "sab2tb_42" || slot.Filename != "Show.S01E01" {
@@ -20,6 +20,24 @@ func TestQueueSlotFromJob(t *testing.T) {
 	}
 	if slot.Status != "Downloading" || slot.Percentage != "50" {
 		t.Errorf("bad status/pct: %+v", slot)
+	}
+	if slot.TimeLeft != "0:02:30" {
+		t.Errorf("timeleft: got %q want 0:02:30", slot.TimeLeft)
+	}
+}
+
+func TestFormatTimeLeft(t *testing.T) {
+	cases := map[int64]string{
+		0:     "0:00:00",
+		-5:    "0:00:00",
+		150:   "0:02:30",
+		3661:  "1:01:01",
+		90061: "1:01:01:01",
+	}
+	for in, want := range cases {
+		if got := formatTimeLeft(in); got != want {
+			t.Errorf("formatTimeLeft(%d): got %q want %q", in, got, want)
+		}
 	}
 }
 
