@@ -795,6 +795,51 @@ func TestHealReconcileFinishesHeal(t *testing.T) {
 	}
 }
 
+func TestHealReconcileNoMatchMarksFailed(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, cfg := testWorkers(t, fake)
+	shortPathRetry(t)
+	ctx := context.Background()
+
+	// The new release folder exists but holds no file matching the broken
+	// symlink, so findBestMatch cannot match it.
+	newRel := "Rel.NoMatch"
+	newDir := filepath.Join(cfg.UsenetPath(), newRel)
+	os.MkdirAll(newDir, 0o755)
+	os.WriteFile(filepath.Join(newDir, "unrelated.txt"), []byte("x"), 0o644)
+
+	id, _ := st.CreateJob(ctx, &job.Job{State: job.StateHealing, Category: "sonarr", NZBName: newRel})
+	j, _ := st.GetJob(ctx, id)
+	j.TorBoxID = 720
+	j.StoragePath = filepath.Join(cfg.SymlinkRoot, "sonarr", "Rel.Old")
+	st.UpdateJob(ctx, j)
+
+	lib := t.TempDir()
+	link := filepath.Join(lib, "ep.mkv")
+	os.Symlink(filepath.Join(cfg.UsenetPath(), "Rel.Old", "ep.mkv"), link)
+	st.UpsertImportedSymlink(ctx, &job.ImportedSymlink{
+		JobID: id, SymlinkPath: link,
+		TargetPath: filepath.Join(cfg.UsenetPath(), "Rel.Old", "ep.mkv"),
+	})
+	syms, _ := st.ListImportedSymlinks(ctx)
+	st.SetSymlinkVerified(ctx, syms[0].ID, true, time.Now())
+
+	fake.list = []torbox.UsenetDownload{{
+		ID: 720, Name: newRel, Progress: 1,
+		DownloadFinished: true, DownloadPresent: true,
+	}}
+	if err := w.healReconcileOnce(ctx); err != nil {
+		t.Fatalf("healReconcileOnce: %v", err)
+	}
+	got, _ := st.GetJob(ctx, id)
+	if got.State != job.StateHealFailed {
+		t.Fatalf("a heal that repointed nothing must be heal_failed, got %s", got.State)
+	}
+	if got.HealCount != 1 || got.LastHealError == "" {
+		t.Errorf("the failed heal must be recorded: count=%d err=%q", got.HealCount, got.LastHealError)
+	}
+}
+
 func TestHealReconcileMarksFailedDownload(t *testing.T) {
 	fake := &fakeTorBox{}
 	w, st, _ := testWorkers(t, fake)

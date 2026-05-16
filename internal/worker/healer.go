@@ -69,11 +69,12 @@ func (w *Workers) finishHeal(ctx context.Context, j *job.Job, rec torbox.UsenetD
 		log.Error("heal: loading symlinks", "error", err)
 		return
 	}
-	healed := 0
+	healed, brokenForJob := 0, 0
 	for _, sym := range syms {
 		if sym.JobID != j.ID || !sym.IsBroken {
 			continue
 		}
+		brokenForJob++
 		base := filepath.Base(sym.TargetPath)
 		newTarget := filepath.Join(newReleaseDir, base)
 		if _, err := os.Stat(newTarget); err != nil {
@@ -93,6 +94,16 @@ func (w *Workers) finishHeal(ctx context.Context, j *job.Job, rec torbox.UsenetD
 			w.logger.Warn("heal: updating symlink row", "id", sym.ID, "error", err)
 		}
 		healed++
+	}
+	if healed == 0 && brokenForJob > 0 {
+		// The resubmitted release matched none of the broken symlinks — the
+		// heal accomplished nothing. Record it as a failure so it surfaces in
+		// /health/heal_failed and the backoff applies, rather than reporting
+		// a misleading "healed" with zero repointed links.
+		log.Warn("heal: no broken symlink matched the new release; treating as failed",
+			"broken", brokenForJob)
+		w.markHealFailed(ctx, j, "no broken symlink matched a file in the new release")
+		return
 	}
 	now := timeNow()
 	j.State = job.StateImported
