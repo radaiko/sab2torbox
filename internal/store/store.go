@@ -323,6 +323,15 @@ func (s *Store) DeleteImportedSymlink(ctx context.Context, id int64) error {
 	return nil
 }
 
+// DeleteImportedSymlinksByJob removes every tracked symlink belonging to a job.
+func (s *Store) DeleteImportedSymlinksByJob(ctx context.Context, jobID int64) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM imported_symlinks WHERE job_id=?`, jobID); err != nil {
+		return fmt.Errorf("deleting symlinks for job %d: %w", jobID, err)
+	}
+	return nil
+}
+
 // SymlinkCounts returns the total tracked symlinks and how many are broken.
 func (s *Store) SymlinkCounts(ctx context.Context) (tracked, broken int64, err error) {
 	err = s.db.QueryRowContext(ctx,
