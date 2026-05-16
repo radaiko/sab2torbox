@@ -1,0 +1,32 @@
+services:
+  sab2torbox:
+    image: ghcr.io/radaiko/sab2torbox:latest
+    container_name: sab2torbox
+    restart: unless-stopped
+    environment:
+      - SAB2TORBOX_TORBOX_API_TOKEN=${TORBOX_API_TOKEN}
+      - SAB2TORBOX_SAB_API_KEY=${SAB_API_KEY}
+      - SAB2TORBOX_WEBDAV_MOUNT_ROOT=/mnt/torbox
+      - SAB2TORBOX_WEBDAV_USENET_SUBPATH=usenet
+      - SAB2TORBOX_DATABASE_PATH=/config/sab2torbox.db
+      - SAB2TORBOX_POLL_INTERVAL=10s
+      - SAB2TORBOX_LOG_LEVEL=info
+      - SAB2TORBOX_CATEGORIES=sonarr,radarr,sonarr-anime
+      - TZ=Europe/Vienna
+    ports:
+      - "8181:8080"
+    volumes:
+      # /config must be writable by uid 65532 (the distroless nonroot user).
+      - ./config:/config
+      # The rclone WebDAV mount. rslave lets the container see the host mount
+      # without propagating its own mounts back to the host.
+      - type: bind
+        source: /mnt/torbox
+        target: /mnt/torbox
+        bind:
+          propagation: rslave
+    healthcheck:
+      test: ["CMD", "/sab2torbox", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -1,0 +1,237 @@
+// Package store provides SQLite-backed persistence for sab2torbox jobs.
+package store
+
+import (
+	"context"
+	"database/sql"
+	"embed"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/pressly/goose/v3"
+	"github.com/radaiko/sab2torbox/internal/job"
+	_ "modernc.org/sqlite"
+)
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
+
+// Store is a SQLite-backed job repository.
+type Store struct {
+	db *sql.DB
+}
+
+// Open opens (creating if needed) the SQLite database at path, applies all
+// pending migrations, and returns a ready Store. All transactions use
+// BEGIN IMMEDIATE to serialize concurrent writers.
+func Open(ctx context.Context, path string) (*Store, error) {
+	dsn := fmt.Sprintf(
+		"file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_txlock=immediate",
+		path)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("opening sqlite %q: %w", path, err)
+	}
+	db.SetMaxOpenConns(1) // SQLite single-writer; avoids SQLITE_BUSY churn
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("pinging sqlite: %w", err)
+	}
+	if err := migrate(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return &Store{db: db}, nil
+}
+
+// migrate applies embedded goose migrations.
+func migrate(db *sql.DB) error {
+	goose.SetBaseFS(migrationsFS)
+	goose.SetLogger(goose.NopLogger())
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		return fmt.Errorf("setting goose dialect: %w", err)
+	}
+	if err := goose.Up(db, "migrations"); err != nil {
+		return fmt.Errorf("running migrations: %w", err)
+	}
+	return nil
+}
+
+// Close releases the underlying database handle.
+func (s *Store) Close() error { return s.db.Close() }
+
+// Ping verifies the database is reachable.
+func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
+
+// Exec runs an arbitrary statement. Intended for tests and maintenance.
+func (s *Store) Exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return s.db.ExecContext(ctx, query, args...)
+}
+
+// jobColumns is the canonical column order for SELECT/scan.
+const jobColumns = `id, state, category, nzb_name, nzb_content, nzb_url,
+	nzb_sha256, torbox_id, torbox_hash, storage_path, total_bytes,
+	downloaded_bytes, progress_pct, fail_message, created_at, updated_at,
+	submitted_at, completed_at`
+
+// scanJob reads one job row in jobColumns order.
+func scanJob(row interface{ Scan(...any) error }) (*job.Job, error) {
+	var j job.Job
+	var (
+		nzbURL, nzbSHA, hash, storage, failMsg sql.NullString
+		torboxID                               sql.NullInt64
+		submitted, completed                   sql.NullTime
+	)
+	err := row.Scan(&j.ID, &j.State, &j.Category, &j.NZBName, &j.NZBContent,
+		&nzbURL, &nzbSHA, &torboxID, &hash, &storage, &j.TotalBytes,
+		&j.DownloadedBytes, &j.ProgressPct, &failMsg, &j.CreatedAt,
+		&j.UpdatedAt, &submitted, &completed)
+	if err != nil {
+		return nil, err
+	}
+	j.NZBURL, j.NZBSHA256, j.TorBoxHash = nzbURL.String, nzbSHA.String, hash.String
+	j.StoragePath, j.FailMessage, j.TorBoxID = storage.String, failMsg.String, torboxID.Int64
+	if submitted.Valid {
+		j.SubmittedAt = &submitted.Time
+	}
+	if completed.Valid {
+		j.CompletedAt = &completed.Time
+	}
+	return &j, nil
+}
+
+// CreateJob inserts j and returns its new ID.
+func (s *Store) CreateJob(ctx context.Context, j *job.Job) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO jobs (state, category, nzb_name, nzb_content, nzb_url, nzb_sha256)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		j.State, j.Category, j.NZBName, j.NZBContent, nullStr(j.NZBURL), nullStr(j.NZBSHA256))
+	if err != nil {
+		return 0, fmt.Errorf("inserting job: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+// GetJob loads one job by ID.
+func (s *Store) GetJob(ctx context.Context, id int64) (*job.Job, error) {
+	j, err := scanJob(s.db.QueryRowContext(ctx,
+		`SELECT `+jobColumns+` FROM jobs WHERE id = ?`, id))
+	if err != nil {
+		return nil, fmt.Errorf("getting job %d: %w", id, err)
+	}
+	return j, nil
+}
+
+// UpdateJob persists every mutable column of j and bumps updated_at.
+func (s *Store) UpdateJob(ctx context.Context, j *job.Job) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE jobs SET state=?, category=?, nzb_name=?, nzb_content=?,
+		 nzb_url=?, nzb_sha256=?, torbox_id=?, torbox_hash=?, storage_path=?,
+		 total_bytes=?, downloaded_bytes=?, progress_pct=?, fail_message=?,
+		 updated_at=CURRENT_TIMESTAMP, submitted_at=?, completed_at=?
+		 WHERE id=?`,
+		j.State, j.Category, j.NZBName, j.NZBContent, nullStr(j.NZBURL),
+		nullStr(j.NZBSHA256), nullInt(j.TorBoxID), nullStr(j.TorBoxHash),
+		nullStr(j.StoragePath), j.TotalBytes, j.DownloadedBytes, j.ProgressPct,
+		nullStr(j.FailMessage), nullTime(j.SubmittedAt), nullTime(j.CompletedAt), j.ID)
+	if err != nil {
+		return fmt.Errorf("updating job %d: %w", j.ID, err)
+	}
+	return nil
+}
+
+// DeleteJob removes one job row.
+func (s *Store) DeleteJob(ctx context.Context, id int64) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM jobs WHERE id=?`, id); err != nil {
+		return fmt.Errorf("deleting job %d: %w", id, err)
+	}
+	return nil
+}
+
+// JobsByState returns all jobs in any of the given states, oldest first.
+func (s *Store) JobsByState(ctx context.Context, states ...job.State) ([]*job.Job, error) {
+	if len(states) == 0 {
+		return nil, nil
+	}
+	placeholders := ""
+	args := make([]any, len(states))
+	for i, st := range states {
+		if i > 0 {
+			placeholders += ","
+		}
+		placeholders += "?"
+		args[i] = st
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+jobColumns+` FROM jobs WHERE state IN (`+placeholders+`) ORDER BY id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying jobs by state: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*job.Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// FindBySHA256 returns the most recent job with the given NZB hash and
+// category, or nil if none exists.
+func (s *Store) FindBySHA256(ctx context.Context, sha, category string) (*job.Job, error) {
+	return s.findOne(ctx, `nzb_sha256=? AND category=?`, sha, category)
+}
+
+// FindByURL returns the most recent job with the given NZB URL and category,
+// or nil if none exists.
+func (s *Store) FindByURL(ctx context.Context, url, category string) (*job.Job, error) {
+	return s.findOne(ctx, `nzb_url=? AND category=?`, url, category)
+}
+
+func (s *Store) findOne(ctx context.Context, where string, args ...any) (*job.Job, error) {
+	j, err := scanJob(s.db.QueryRowContext(ctx,
+		`SELECT `+jobColumns+` FROM jobs WHERE `+where+` ORDER BY id DESC LIMIT 1`, args...))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("finding job: %w", err)
+	}
+	return j, nil
+}
+
+// ReapImported deletes imported jobs whose updated_at is older than cutoff and
+// returns the number removed.
+func (s *Store) ReapImported(ctx context.Context, cutoff time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM jobs WHERE state=? AND updated_at < ?`, job.StateImported, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("reaping imported jobs: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+func nullStr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func nullInt(n int64) any {
+	if n == 0 {
+		return nil
+	}
+	return n
+}
+
+func nullTime(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return *t
+}
