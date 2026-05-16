@@ -112,7 +112,12 @@ func (s *Server) handleGetConfig(w http.ResponseWriter) {
 	resp.Config.Misc.DownloadDir = s.cfg.UsenetPath()
 	resp.Config.Categories = []Category{{Name: "*", Dir: ""}}
 	for _, c := range s.cfg.Categories {
-		resp.Config.Categories = append(resp.Config.Categories, Category{Name: c, Dir: c})
+		// dir is intentionally empty: sab2torbox has no per-category
+		// folders. TorBox writes one folder per release directly under
+		// complete_dir, so a category maps to no subdirectory. Reporting a
+		// non-empty dir makes Sonarr expect (and health-check) a
+		// <complete_dir>/<category> folder that never exists.
+		resp.Config.Categories = append(resp.Config.Categories, Category{Name: c, Dir: ""})
 	}
 	s.writeJSON(w, resp)
 }

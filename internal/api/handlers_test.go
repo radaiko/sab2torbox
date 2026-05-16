@@ -189,6 +189,13 @@ func TestGetConfigAndFullstatus(t *testing.T) {
 	if len(cfg.Config.Categories) != 3 || cfg.Config.Misc.CompleteDir == "" {
 		t.Errorf("get_config: %+v", cfg.Config)
 	}
+	// Every category must report an empty dir: sab2torbox has no per-category
+	// folders, so Sonarr must not health-check a <complete_dir>/<category> path.
+	for _, c := range cfg.Config.Categories {
+		if c.Dir != "" {
+			t.Errorf("category %q reports dir %q, want empty", c.Name, c.Dir)
+		}
+	}
 
 	rec = httptest.NewRecorder()
 	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?mode=fullstatus&apikey=secret", nil))

@@ -178,6 +178,14 @@ mode (unsupported — switch it to folder mode), or `WEBDAV_USENET_SUBPATH` is
 set wrong (it should normally be empty, since TorBox puts release folders
 directly under the mount root).
 
+**Sonarr: "download client places downloads in `…` but this directory does not
+appear to exist inside the container."**
+Two causes: (1) `WEBDAV_USENET_SUBPATH` points at a folder that doesn't exist —
+leave it empty so `complete_dir` is the mount root itself; (2) `WEBDAV_MOUNT_ROOT`
+must be bind-mounted into the Sonarr/Radarr container at the *same* path it has
+in sab2torbox. sab2torbox reports no per-category subfolders, so Sonarr only
+needs the mount root to exist — not a `<mount>/<category>` directory.
+
 **Sonarr import is slow / copies bytes.**
 The library root is not on the rclone WebDAV mount. Move it onto the same mount
 as `WEBDAV_MOUNT_ROOT` so the import is a rename. See the warning above.
