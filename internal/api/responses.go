@@ -109,6 +109,16 @@ type SymlinkHealthResponse struct {
 	NextRun    string `json:"next_run,omitempty"`
 }
 
+// HealFailedItem is one entry in the GET /health/heal_failed list.
+type HealFailedItem struct {
+	JobID          int64    `json:"job_id"`
+	Name           string   `json:"name"`
+	BrokenSymlinks []string `json:"broken_symlinks"`
+	LastHealError  string   `json:"last_heal_error"`
+	HealCount      int64    `json:"heal_count"`
+	LastHealedAt   string   `json:"last_healed_at,omitempty"`
+}
+
 // queueStatusLabel maps a job state to the SAB queue status string.
 func queueStatusLabel(s job.State) string {
 	switch s {
