@@ -553,6 +553,23 @@ func TestPollerSkipsRefreshWhileDownloadOngoing(t *testing.T) {
 	}
 }
 
+func TestSubmitterKeepsNZBContent(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, _ := testWorkers(t, fake)
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{
+		State: job.StatePending, Category: "sonarr", NZBName: "Rel",
+		NZBContent: []byte("<nzb/>"),
+	})
+	if err := w.submitOnce(ctx); err != nil {
+		t.Fatalf("submitOnce: %v", err)
+	}
+	got, _ := st.GetJob(ctx, id)
+	if len(got.NZBContent) == 0 {
+		t.Error("nzb_content must be kept after submission (heal seed)")
+	}
+}
+
 func TestPollerWebDAVRefreshBacksOffOn429(t *testing.T) {
 	var hits atomic.Int32
 	srv := webdavRefreshServer(t, &hits, http.StatusTooManyRequests)
