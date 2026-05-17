@@ -26,9 +26,12 @@ func TestBuildSymlinkFarm(t *testing.T) {
 	}
 	root := t.TempDir()
 
-	dest, err := buildSymlinkFarm(root, "sonarr-stream", "The.Rookie.S08E01", src)
+	dest, files, err := buildSymlinkFarm(root, "sonarr-stream", "The.Rookie.S08E01", src)
 	if err != nil {
 		t.Fatalf("buildSymlinkFarm: %v", err)
+	}
+	if files != 1 {
+		t.Errorf("files: got %d want 1", files)
 	}
 	want := filepath.Join(root, "sonarr-stream", "The.Rookie.S08E01")
 	if dest != want {
@@ -45,9 +48,23 @@ func TestBuildSymlinkFarm(t *testing.T) {
 	if b, err := os.ReadFile(link); err != nil || string(b) != "video" {
 		t.Errorf("reading through symlink: %q err=%v", b, err)
 	}
-	// Idempotent: a second build over an existing farm must not error.
-	if _, err := buildSymlinkFarm(root, "sonarr-stream", "The.Rookie.S08E01", src); err != nil {
-		t.Errorf("second buildSymlinkFarm should be idempotent: %v", err)
+	// Idempotent: a second build over an existing farm must not error and
+	// must still report the file count.
+	if _, files, err := buildSymlinkFarm(root, "sonarr-stream", "The.Rookie.S08E01", src); err != nil || files != 1 {
+		t.Errorf("second buildSymlinkFarm: files=%d err=%v", files, err)
+	}
+}
+
+func TestBuildSymlinkFarmEmptySource(t *testing.T) {
+	// TorBox's WebDAV can list a release folder before its files appear.
+	src := t.TempDir() // exists, but holds no files
+	root := t.TempDir()
+	_, files, err := buildSymlinkFarm(root, "cat", "Rel", src)
+	if err != nil {
+		t.Fatalf("buildSymlinkFarm: %v", err)
+	}
+	if files != 0 {
+		t.Errorf("an empty release must report 0 files, got %d", files)
 	}
 }
 
@@ -60,7 +77,7 @@ func TestBuildSymlinkFarmNested(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
-	dest, err := buildSymlinkFarm(root, "cat", "Rel", src)
+	dest, _, err := buildSymlinkFarm(root, "cat", "Rel", src)
 	if err != nil {
 		t.Fatalf("buildSymlinkFarm: %v", err)
 	}

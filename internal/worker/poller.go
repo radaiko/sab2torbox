@@ -142,9 +142,25 @@ func (w *Workers) reconcile(ctx context.Context, j *job.Job, rec torbox.UsenetDo
 			}
 			return reconcileAwaitingWebDAV
 		}
-		storagePath, ferr := buildSymlinkFarm(w.cfg.SymlinkRoot, j.Category, rec.Name, sourceDir)
+		storagePath, files, ferr := buildSymlinkFarm(w.cfg.SymlinkRoot, j.Category, rec.Name, sourceDir)
 		if ferr != nil {
 			log.Error("building symlink farm", "error", ferr)
+			if uerr := w.store.UpdateJob(ctx, j); uerr != nil {
+				log.Error("persisting progress", "error", uerr)
+			}
+			return reconcileAwaitingWebDAV
+		}
+		if files == 0 {
+			// TorBox's WebDAV surfaces the release folder before its
+			// contents. Completing now would publish an empty directory that
+			// the reaper later sweeps away, leaving Sonarr importing a path
+			// that no longer exists. Drop the premature dir and wait.
+			log.Debug("release folder present but empty; waiting for webdav contents",
+				"source", sourceDir)
+			if err := removeSymlinkDir(w.cfg.SymlinkRoot, storagePath); err != nil {
+				log.Warn("removing premature empty symlink dir",
+					"dir", storagePath, "error", err)
+			}
 			if uerr := w.store.UpdateJob(ctx, j); uerr != nil {
 				log.Error("persisting progress", "error", uerr)
 			}

@@ -425,6 +425,59 @@ func TestPollerCompletesAndBuildsFarm(t *testing.T) {
 	}
 }
 
+func TestPollerWaitsForEmptyWebDAVRelease(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, cfg := testWorkers(t, fake)
+	ctx := context.Background()
+
+	// TorBox reports the download finished and the WebDAV release folder
+	// exists, but its files have not surfaced yet.
+	relName := "Bleach.S01E15.2004.1080p"
+	srcDir := filepath.Join(cfg.UsenetPath(), relName)
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	id, _ := st.CreateJob(ctx, &job.Job{
+		State: job.StateDownloading, Category: "sonarr-stream", NZBName: relName,
+	})
+	j, _ := st.GetJob(ctx, id)
+	j.TorBoxID = 11
+	st.UpdateJob(ctx, j)
+	fake.list = []torbox.UsenetDownload{{
+		ID: 11, Name: relName, Size: 1, Progress: 1,
+		DownloadFinished: true, DownloadPresent: true,
+	}}
+
+	if err := w.pollOnce(ctx); err != nil {
+		t.Fatalf("pollOnce: %v", err)
+	}
+	got, _ := st.GetJob(ctx, id)
+	if got.State == job.StateCompleted {
+		t.Fatal("a release with no files yet must not be marked completed")
+	}
+	// The premature empty symlink dir must not be left for the reaper to find.
+	prematureDir := filepath.Join(cfg.SymlinkRoot, "sonarr-stream", relName)
+	if _, err := os.Stat(prematureDir); err == nil {
+		t.Error("an empty symlink dir must not be published")
+	}
+
+	// Once the files surface, the next poll completes the job normally.
+	if err := os.WriteFile(filepath.Join(srcDir, "ep.mkv"), []byte("v"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.pollOnce(ctx); err != nil {
+		t.Fatalf("pollOnce after files appeared: %v", err)
+	}
+	got, _ = st.GetJob(ctx, id)
+	if got.State != job.StateCompleted {
+		t.Fatalf("state once files exist: got %s want completed", got.State)
+	}
+	if _, err := os.Lstat(filepath.Join(prematureDir, "ep.mkv")); err != nil {
+		t.Errorf("symlink not created after files surfaced: %v", err)
+	}
+}
+
 func TestDeleterRemovesSymlinkDir(t *testing.T) {
 	fake := &fakeTorBox{}
 	w, st, cfg := testWorkers(t, fake)

@@ -22,15 +22,18 @@ func EnsureCategoryDirs(symlinkRoot string, categories []string) error {
 
 // buildSymlinkFarm mirrors every file of a completed release (rooted at
 // sourceDir on the WebDAV mount) as a symlink under
-// <symlinkRoot>/<category>/<release>/, and returns that directory. Symlink
-// targets are absolute so any container that mounts the WebDAV path can
-// resolve them. It is idempotent: an existing link is left untouched.
-func buildSymlinkFarm(symlinkRoot, category, release, sourceDir string) (string, error) {
-	dest := filepath.Join(symlinkRoot, category, release)
+// <symlinkRoot>/<category>/<release>/. It returns that directory and the
+// number of files the release contains. A files count of zero means TorBox's
+// WebDAV listing has surfaced the release folder but not its contents yet;
+// the caller must treat the release as not ready rather than completed.
+// Symlink targets are absolute so any container that mounts the WebDAV path
+// can resolve them. It is idempotent: an existing link is left untouched.
+func buildSymlinkFarm(symlinkRoot, category, release, sourceDir string) (dest string, files int, err error) {
+	dest = filepath.Join(symlinkRoot, category, release)
 	if err := os.MkdirAll(dest, 0o755); err != nil {
-		return "", fmt.Errorf("creating release dir %q: %w", dest, err)
+		return "", 0, fmt.Errorf("creating release dir %q: %w", dest, err)
 	}
-	err := filepath.WalkDir(sourceDir, func(path string, d fs.DirEntry, walkErr error) error {
+	walkErr := filepath.WalkDir(sourceDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -45,6 +48,7 @@ func buildSymlinkFarm(symlinkRoot, category, release, sourceDir string) (string,
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
+		files++
 		if _, err := os.Lstat(target); err == nil {
 			return nil // already linked
 		}
@@ -57,10 +61,10 @@ func buildSymlinkFarm(symlinkRoot, category, release, sourceDir string) (string,
 		}
 		return nil
 	})
-	if err != nil {
-		return "", fmt.Errorf("building symlink farm for %q: %w", release, err)
+	if walkErr != nil {
+		return "", 0, fmt.Errorf("building symlink farm for %q: %w", release, walkErr)
 	}
-	return dest, nil
+	return dest, files, nil
 }
 
 // removeSymlinkDir removes a per-release symlink directory, but only when it

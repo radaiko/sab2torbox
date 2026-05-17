@@ -99,8 +99,12 @@ func TestEndToEndSubmitPollCompleteDelete(t *testing.T) {
 		t.Fatalf("expected downloading, got %s", j.State)
 	}
 
-	// 3. TorBox finishes; the WebDAV directory appears.
-	if err := os.MkdirAll(filepath.Join(cfg.UsenetPath(), "Integration.Release"), 0o755); err != nil {
+	// 3. TorBox finishes; the WebDAV directory and its file appear.
+	relDir := filepath.Join(cfg.UsenetPath(), "Integration.Release")
+	if err := os.MkdirAll(relDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(relDir, "ep.mkv"), []byte("v"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	mock.mu.Lock()
