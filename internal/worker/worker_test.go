@@ -504,6 +504,58 @@ func TestDeleterRemovesSymlinkDir(t *testing.T) {
 	}
 }
 
+func TestDetectImportsAdvancesEmptiedReleases(t *testing.T) {
+	fake := &fakeTorBox{}
+	w, st, cfg := testWorkers(t, fake)
+	cfg.Categories = []string{"sonarr"}
+	ctx := context.Background()
+	catDir := filepath.Join(cfg.SymlinkRoot, "sonarr")
+
+	// completedJob creates a completed job with a storage_path (which is
+	// persisted via UpdateJob, not CreateJob).
+	completedJob := func(name, storagePath string) int64 {
+		t.Helper()
+		id, _ := st.CreateJob(ctx, &job.Job{
+			State: job.StateCompleted, Category: "sonarr", NZBName: name,
+		})
+		j, _ := st.GetJob(ctx, id)
+		j.StoragePath = storagePath
+		if err := st.UpdateJob(ctx, j); err != nil {
+			t.Fatalf("UpdateJob: %v", err)
+		}
+		return id
+	}
+
+	// 1. Sonarr moved every symlink out — empty dir — counts as imported.
+	emptyDir := filepath.Join(catDir, "Imported.Rel")
+	os.MkdirAll(emptyDir, 0o755)
+	emptyID := completedJob("Imported.Rel", emptyDir)
+
+	// 2. Files still present — Sonarr has not imported — stays completed.
+	fullDir := filepath.Join(catDir, "Waiting.Rel")
+	os.MkdirAll(fullDir, 0o755)
+	src := filepath.Join(t.TempDir(), "ep.mkv")
+	os.WriteFile(src, []byte("v"), 0o644)
+	os.Symlink(src, filepath.Join(fullDir, "ep.mkv"))
+	fullID := completedJob("Waiting.Rel", fullDir)
+
+	// 3. Release dir already swept away — counts as imported.
+	goneID := completedJob("Gone.Rel", filepath.Join(catDir, "Gone.Rel"))
+
+	if err := w.reapOnce(ctx); err != nil {
+		t.Fatalf("reapOnce: %v", err)
+	}
+	if got, _ := st.GetJob(ctx, emptyID); got.State != job.StateImported {
+		t.Errorf("an emptied release must become imported, got %s", got.State)
+	}
+	if got, _ := st.GetJob(ctx, fullID); got.State != job.StateCompleted {
+		t.Errorf("a release whose files are still present must stay completed, got %s", got.State)
+	}
+	if got, _ := st.GetJob(ctx, goneID); got.State != job.StateImported {
+		t.Errorf("a swept-away release must become imported, got %s", got.State)
+	}
+}
+
 func TestReaperSweepsSymlinkFarm(t *testing.T) {
 	fake := &fakeTorBox{}
 	w, _, cfg := testWorkers(t, fake)

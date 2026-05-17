@@ -229,8 +229,13 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		s.handleDelete(w, r)
 		return
 	}
+	// Only completed and failed jobs are surfaced to Sonarr. Imported jobs
+	// are deliberately omitted: once Sonarr has moved a release out of the
+	// symlink farm its per-release directory is swept away, so advertising it
+	// here with a storage path that no longer exists makes Sonarr retry the
+	// import forever ("path does not exist or is not accessible").
 	jobs, err := s.store.JobsByState(r.Context(),
-		job.StateCompleted, job.StateImported, job.StateFailed)
+		job.StateCompleted, job.StateFailed)
 	if err != nil {
 		s.logger.Error("loading history", "error", err)
 		jobs = nil
@@ -238,13 +243,6 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	slots := make([]HistorySlot, 0, len(jobs))
 	for _, j := range jobs {
 		slots = append(slots, historySlotFromJob(j))
-		// Reading the history entry implies Sonarr is importing.
-		if j.State == job.StateCompleted {
-			j.State = job.StateImported
-			if uerr := s.store.UpdateJob(r.Context(), j); uerr != nil {
-				s.logger.Error("marking job imported", "job_id", j.ID, "error", uerr)
-			}
-		}
 	}
 	s.writeJSON(w, HistoryResponse{History: History{Slots: slots}})
 }

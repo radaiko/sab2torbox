@@ -147,6 +147,30 @@ func TestQueueAndHistory(t *testing.T) {
 	}
 }
 
+func TestHistoryOmitsImportedJobs(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	cid, _ := st.CreateJob(ctx, &job.Job{
+		State: job.StateCompleted, Category: "sonarr", NZBName: "Fresh", StoragePath: "/p",
+	})
+	st.CreateJob(ctx, &job.Job{
+		State: job.StateImported, Category: "sonarr", NZBName: "AlreadyImported", StoragePath: "/gone",
+	})
+
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api?mode=history&apikey=secret", nil))
+	var h HistoryResponse
+	json.Unmarshal(rec.Body.Bytes(), &h)
+	if len(h.History.Slots) != 1 || h.History.Slots[0].Name != "Fresh" {
+		t.Fatalf("history should list only the completed job, got %+v", h)
+	}
+	// A history read must not flip a completed job to imported: Sonarr polls
+	// history continuously, long before it actually imports anything.
+	if got, _ := st.GetJob(ctx, cid); got.State != job.StateCompleted {
+		t.Errorf("completed job must stay completed after a history read, got %s", got.State)
+	}
+}
+
 func TestHistoryDeleteWithFilesMarksJobDeleted(t *testing.T) {
 	srv, st := testServer(t)
 	ctx := context.Background()

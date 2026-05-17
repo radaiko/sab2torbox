@@ -2,9 +2,13 @@ package worker
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/radaiko/sab2torbox/internal/job"
 )
 
 // importedTTL is how long an imported job is kept before the reaper drops it.
@@ -14,6 +18,7 @@ const importedTTL = 24 * time.Hour
 // downloads Sonarr never deleted via the SAB API) and, in symlink mode,
 // sweeps stale per-release directories out of the symlink farm.
 func (w *Workers) reapOnce(ctx context.Context) error {
+	w.detectImports(ctx)
 	n, err := w.store.ReapImported(ctx, time.Now().Add(-importedTTL))
 	if err != nil {
 		return err
@@ -23,6 +28,48 @@ func (w *Workers) reapOnce(ctx context.Context) error {
 	}
 	w.sweepSymlinkFarm(ctx)
 	return nil
+}
+
+// detectImports advances completed jobs to `imported` once Sonarr has taken
+// their files. In symlink mode Sonarr imports a release by moving each
+// symlink out of the per-release farm directory, so a release directory that
+// is empty (or has already been swept away) means the import is done. This is
+// the honest import signal: it lets reapImported eventually drop the row,
+// hands the job to the healer, and stops handleHistory from advertising a
+// release Sonarr has already imported.
+func (w *Workers) detectImports(ctx context.Context) {
+	jobs, err := w.store.JobsByState(ctx, job.StateCompleted)
+	if err != nil {
+		w.logger.Error("loading completed jobs", "error", err)
+		return
+	}
+	for _, j := range jobs {
+		if ctx.Err() != nil {
+			return
+		}
+		if j.StoragePath == "" {
+			continue
+		}
+		empty, _, cerr := classifyReleaseDir(j.StoragePath)
+		switch {
+		case errors.Is(cerr, fs.ErrNotExist):
+			empty = true // dir already swept away — fully imported
+		case cerr != nil:
+			w.logger.Warn("checking release dir for import",
+				"dir", j.StoragePath, "error", cerr)
+			continue
+		}
+		if !empty {
+			continue // files still in the farm — Sonarr has not imported yet
+		}
+		j.State = job.StateImported
+		if err := w.store.UpdateJob(ctx, j); err != nil {
+			w.logger.Error("marking job imported", "job_id", j.ID, "error", err)
+			continue
+		}
+		w.logger.Info("job imported by sonarr",
+			"job_id", j.ID, "storage_path", j.StoragePath)
+	}
 }
 
 // sweepSymlinkFarm removes per-release symlink directories that are no longer
