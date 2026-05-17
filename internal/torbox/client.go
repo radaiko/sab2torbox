@@ -48,6 +48,9 @@ type CreateRequest struct {
 type APIError struct {
 	Status int
 	Detail string
+	// RetryAfter is the server's Retry-After hint, parsed from the response
+	// header on 429 responses. Zero when absent or unparseable.
+	RetryAfter time.Duration
 }
 
 func (e *APIError) Error() string {
@@ -149,10 +152,11 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, body 
 	if err != nil {
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
+	retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
 	var env Envelope
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &env); err != nil {
-			return nil, &APIError{Status: resp.StatusCode,
+			return nil, &APIError{Status: resp.StatusCode, RetryAfter: retryAfter,
 				Detail: "non-JSON response: " + truncate(string(raw), 200)}
 		}
 	}
@@ -161,9 +165,40 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, body 
 		if detail == "" {
 			detail = "request failed with HTTP " + strconv.Itoa(resp.StatusCode)
 		}
-		return nil, &APIError{Status: resp.StatusCode, Detail: detail}
+		return nil, &APIError{Status: resp.StatusCode, Detail: detail, RetryAfter: retryAfter}
 	}
 	return &env, nil
+}
+
+// parseRetryAfter interprets an HTTP Retry-After header value, which is either
+// a non-negative number of seconds or an HTTP date. It returns 0 when the
+// header is absent or cannot be parsed.
+func parseRetryAfter(v string) time.Duration {
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+// RateLimit reports whether err is a 429 rate-limit response. retryAfter is
+// the server's Retry-After hint, or 0 when it gave none.
+func RateLimit(err error) (retryAfter time.Duration, ok bool) {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == 429 {
+		return apiErr.RetryAfter, true
+	}
+	return 0, false
 }
 
 // Retryable reports whether err is a transient failure worth retrying.

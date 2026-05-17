@@ -38,6 +38,10 @@ type Workers struct {
 	// Touched only by the single deleter goroutine, so it needs no lock.
 	deleteAttempts map[int64]int
 
+	// submitBackoffUntil pauses NZB submissions after TorBox rate-limits us
+	// with a 429. Touched only by the single submitter goroutine, no lock.
+	submitBackoffUntil time.Time
+
 	// WebDAV /refresh state, also poller-goroutine-only.
 	httpClient         *http.Client
 	lastWebDAVRefresh  time.Time

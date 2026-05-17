@@ -22,18 +22,20 @@ import (
 
 // fakeTorBox is an in-memory TorBoxAPI for tests.
 type fakeTorBox struct {
-	mu         sync.Mutex
-	created    []torbox.CreateRequest
-	createErr  error
-	nextID     int64
-	list       []torbox.UsenetDownload
-	controls   []string
-	controlErr error
+	mu          sync.Mutex
+	created     []torbox.CreateRequest
+	createErr   error
+	createCalls int
+	nextID      int64
+	list        []torbox.UsenetDownload
+	controls    []string
+	controlErr  error
 }
 
 func (f *fakeTorBox) CreateUsenetDownload(_ context.Context, r torbox.CreateRequest) (*torbox.CreateResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.createCalls++
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
@@ -111,6 +113,57 @@ func TestSubmitterPermanentFailureMarksFailed(t *testing.T) {
 	}
 	if got.FailMessage == "" {
 		t.Error("fail_message should be populated")
+	}
+}
+
+func TestSubmitterRateLimitKeepsJobPending(t *testing.T) {
+	fake := &fakeTorBox{createErr: &torbox.APIError{Status: 429, Detail: "60 per 1 hour"}}
+	w, st, _ := testWorkers(t, fake)
+	ctx := context.Background()
+	id, _ := st.CreateJob(ctx, &job.Job{
+		State: job.StatePending, Category: "sonarr", NZBName: "Rel", NZBContent: []byte("x"),
+	})
+
+	if err := w.submitOnce(ctx); err != nil {
+		t.Fatalf("submitOnce: %v", err)
+	}
+	got, _ := st.GetJob(ctx, id)
+	if got.State != job.StatePending {
+		t.Fatalf("a rate-limited job must stay pending, not %s", got.State)
+	}
+	if got.FailMessage != "" {
+		t.Errorf("a rate-limit is not a failure: fail_message=%q", got.FailMessage)
+	}
+	if !w.submitBackoffUntil.After(time.Now()) {
+		t.Fatal("submitter should enter a cooldown after a 429")
+	}
+
+	// A tick inside the cooldown window must not call TorBox again.
+	before := fake.createCalls
+	if err := w.submitOnce(ctx); err != nil {
+		t.Fatalf("submitOnce during cooldown: %v", err)
+	}
+	if fake.createCalls != before {
+		t.Errorf("submitter hit TorBox during cooldown: %d extra call(s)", fake.createCalls-before)
+	}
+}
+
+func TestSubmitterRateLimitHonorsRetryAfter(t *testing.T) {
+	fake := &fakeTorBox{createErr: &torbox.APIError{
+		Status: 429, Detail: "slow down", RetryAfter: 30 * time.Minute,
+	}}
+	w, st, _ := testWorkers(t, fake)
+	ctx := context.Background()
+	st.CreateJob(ctx, &job.Job{
+		State: job.StatePending, Category: "sonarr", NZBName: "Rel", NZBContent: []byte("x"),
+	})
+
+	if err := w.submitOnce(ctx); err != nil {
+		t.Fatalf("submitOnce: %v", err)
+	}
+	d := time.Until(w.submitBackoffUntil)
+	if d < 25*time.Minute || d > 31*time.Minute {
+		t.Errorf("cooldown should follow the Retry-After hint (~30m), got %s", d)
 	}
 }
 

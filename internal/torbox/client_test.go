@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCreateUsenetDownload(t *testing.T) {
@@ -118,6 +119,33 @@ func TestRetryableAndDownloadedBytes(t *testing.T) {
 	}
 	if got := (UsenetDownload{Size: 0, Progress: 1}).DownloadedBytes(); got != 0 {
 		t.Errorf("DownloadedBytes size 0: got %d", got)
+	}
+}
+
+func TestRateLimitParsing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"success":false,"detail":"60 per 1 hour"}`))
+	}))
+	defer srv.Close()
+	c := NewWithBaseURL("tok", srv.URL+"/v1/api")
+	_, err := c.CreateUsenetDownload(context.Background(), CreateRequest{NZBContent: []byte("x"), NZBName: "n"})
+	retryAfter, ok := RateLimit(err)
+	if !ok {
+		t.Fatalf("a 429 must be recognised as a rate-limit, got %v", err)
+	}
+	if retryAfter != 2*time.Minute {
+		t.Errorf("Retry-After: 120 should parse to 2m, got %s", retryAfter)
+	}
+	if _, ok := RateLimit(&APIError{Status: 500}); ok {
+		t.Error("a 500 is not a rate-limit")
+	}
+	if d := parseRetryAfter(""); d != 0 {
+		t.Errorf("absent Retry-After should be 0, got %s", d)
+	}
+	if d := parseRetryAfter("garbage"); d != 0 {
+		t.Errorf("unparseable Retry-After should be 0, got %s", d)
 	}
 }
 
