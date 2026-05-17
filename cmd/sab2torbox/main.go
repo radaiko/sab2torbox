@@ -20,6 +20,12 @@ import (
 	"github.com/radaiko/sab2torbox/internal/worker"
 )
 
+// version is the build identifier shown in the startup log. It is "dev" for
+// local builds and is overridden at release time via
+// -ldflags "-X main.version=<n>", where <n> is the CI build number that
+// increments on every published image.
+var version = "dev"
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		os.Exit(runHealthcheck())
@@ -82,6 +88,7 @@ func run() error {
 	}()
 
 	logger.Info("sab2torbox started",
+		"version", version,
 		"listen_addr", cfg.ListenAddr, "usenet_path", cfg.UsenetPath(),
 		"poll_interval", cfg.PollInterval.String())
 
